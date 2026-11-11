@@ -23,5 +23,11 @@
 .file-preview-directory > button { width: 100%; display: flex; align-items: center; gap: 12px; text-align: left; padding: 11px 12px; background: transparent; border-color: transparent; }
 .file-preview-directory > button:hover { background: var(--hover); }
 .file-preview-directory > button > span:last-child:not(:nth-child(2)) { margin-left: auto; font-size: 12px; }
-.file-preview-footer { display: flex; justify-content: space-between; gap: 12px; flex-shrink: 0; padding: 10px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.file-preview-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.file-preview-info { display: grid; gap: 3px; min-width: 0; line-height: 1.5; }
+.file-preview-feedback { min-height: 16px; overflow-wrap: anywhere; }
+.file-preview-feedback[data-error] { color: var(--danger); }
+.file-preview-open { flex-shrink: 0; gap: 7px; padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--ink-secondary); font-size: 12px; transition: background .18s var(--motion-ease), border-color .18s var(--motion-ease), transform .18s var(--motion-ease); }
+.file-preview-open:hover:not(:disabled) { background: var(--hover); border-color: var(--accent-border); }
+.file-preview-open:active:not(:disabled) { transform: scale(.98); }
 @media (max-width: 600px) { .file-preview-dialog { width: calc(100vw - 16px); height: calc(100dvh - 24px); } .file-preview-header { padding: 13px 12px; gap: 8px; } .file-preview-header > svg { display: none; } .file-preview-actions { gap: 1px; } .file-preview-footer { padding: 9px 12px; } }

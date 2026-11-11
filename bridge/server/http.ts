@@ -11,6 +11,7 @@ import { preferencesSchema, sessionOptionsSchema } from './preferences.ts'
 import { attachmentLimit } from './attachments.ts'
 import { projectThread } from './projection.ts'
 import { record } from './errors.ts'
+import { openLocalPath } from './desktop.ts'
 
 const messageSchema = z.object({
   text: z.string().trim().max(100_000), model: z.string().max(200).optional(),
@@ -44,10 +45,11 @@ interface HttpOptions {
   dist: string
   control?: { instance: string; token: string; stop: () => void }
   devMiddleware?: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
+  openFile?: (path: string) => Promise<void>
 }
 
 /** Loopback-only HTTP transport with same-origin and per-process CSRF validation. */
-export function createHttpServer({ bridge, dist, devMiddleware, control }: HttpOptions) {
+export function createHttpServer({ bridge, dist, devMiddleware, control, openFile = openLocalPath }: HttpOptions) {
   const token = randomBytes(32).toString('hex')
   const streams = new Set<ServerResponse>()
   const server = createServer((req, res) => {
@@ -106,6 +108,12 @@ export function createHttpServer({ bridge, dist, devMiddleware, control }: HttpO
       if (req.headers.origin !== origin || typeof supplied !== 'string' || supplied.length !== token.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(token))) {
         throw new BridgeError('CSRF', '请求校验失败，请刷新页面', 403)
       }
+    }
+    if (path === '/api/open-file' && req.method === 'POST') {
+      const input = z.object({ workspace: z.string().min(1).max(4096), path: z.string().min(1).max(4096) }).strict().parse(await body(req))
+      const target = await bridge.catalog.get(input.workspace).localOpenTarget(input.path)
+      await openFile(target)
+      json(res, { ok: true }); return
     }
     const threadMatch = /^\/api\/threads\/([^/]+)(?:\/(message|edit|interrupt|rename|archive|restore|compact|queue|options|release|handoff|todo-connect|todo-link|snapshot|goal))?$/.exec(path)
     if (path === '/api/preferences' && req.method === 'GET') { json(res, await bridge.preferences.snapshot()); return }

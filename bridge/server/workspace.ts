@@ -1,4 +1,4 @@
-import { realpath, readdir, readFile, stat, lstat } from 'node:fs/promises'
+import { realpath, readdir, readFile, stat, lstat, open } from 'node:fs/promises'
 import { relative, resolve, isAbsolute, sep, extname } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -9,6 +9,8 @@ const exec = promisify(execFile)
 const hidden = new Set(['node_modules', 'dist', 'target', 'vendor', 'upstream'])
 const privatePreviewPaths = new Set(['.data', '.git', '.codex', '.ssh', '.aws', '.azure', '.config', '.docker', '.gnupg', '.kube', '.pki', 'node_modules'])
 const privatePreviewNames = new Set(['.npmrc', '.netrc', '.pypirc', '.git-credentials', '.bash_history', '.zsh_history'])
+const previewLimit = 512 * 1024
+const privateKeyHeader = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/
 const previewLanguages: Record<string, string> = {
   '.md': 'markdown', '.mdx': 'markdown', '.json': 'json', '.jsonc': 'json', '.ts': 'typescript', '.tsx': 'tsx',
   '.js': 'javascript', '.jsx': 'jsx', '.mjs': 'javascript', '.cjs': 'javascript', '.py': 'python', '.sh': 'bash',
@@ -88,8 +90,8 @@ export class Workspace {
     return this.readTextFile(file)
   }
 
-  /** Explicit document links may open safe dotfiles without exposing them in the browser/index. */
-  async preview(path: string): Promise<{ path: string; kind: 'file' | 'directory'; text?: string; language?: string }> {
+  /** Preview and desktop opening use the same real-path and sensitive-path restrictions. */
+  private async previewTarget(path: string): Promise<{ canonical: string; path: string; kind: 'file' | 'directory' }> {
     const requested = resolve(this.root, path)
     if (!this.contains(requested)) throw new BridgeError('OUTSIDE_WORKSPACE', '不能读取工作区之外的文件', 403)
     const segments = relative(this.root, requested).split(sep).filter(Boolean)
@@ -105,18 +107,50 @@ export class Workspace {
     if (!this.contains(canonical)) throw new BridgeError('OUTSIDE_WORKSPACE', '不能读取工作区之外的文件', 403)
     const canonicalPath = relative(this.root, canonical) || '.'
     if (canonicalPath.split(sep).some(privatePreviewSegment)) throw new BridgeError('PRIVATE_FILE', '不能预览凭据、私钥或应用运行数据', 403)
-    if ((await stat(canonical)).isDirectory()) return { path: canonicalPath, kind: 'directory' }
-    const text = await this.readTextFile(canonical)
-    if (/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/.test(text)) throw new BridgeError('PRIVATE_FILE', '不能预览私钥内容', 403)
-    return { path: canonicalPath, kind: 'file', text, language: previewLanguages[extname(canonical).toLowerCase()] || 'text' }
+    const info = await stat(canonical)
+    if (info.isDirectory()) return { canonical, path: canonicalPath, kind: 'directory' }
+    if (!info.isFile()) throw new BridgeError('NOT_FILE', '请选择普通文件或目录')
+    return { canonical, path: canonicalPath, kind: 'file' }
+  }
+
+  /** Explicit document links may open safe dotfiles without exposing them in the browser/index. */
+  async preview(path: string): Promise<{ path: string; kind: 'file' | 'directory'; text?: string; language?: string }> {
+    const target = await this.previewTarget(path)
+    if (target.kind === 'directory') return { path: target.path, kind: 'directory' }
+    const text = await this.readTextFile(target.canonical)
+    if (privateKeyHeader.test(text)) throw new BridgeError('PRIVATE_FILE', '不能预览私钥内容', 403)
+    return { path: target.path, kind: 'file', text, language: previewLanguages[extname(target.canonical).toLowerCase()] || 'text' }
+  }
+
+  /** Resolve a local desktop target without loading large or binary files into the server. */
+  async localOpenTarget(path: string): Promise<string> {
+    if (/^[a-z][a-z0-9+.-]*:/i.test(path)) throw new BridgeError('LOCAL_PATH', '请选择工作区内的本地文件或目录')
+    const target = await this.previewTarget(path)
+    if (target.kind === 'file') {
+      // Scan the same bounded range as text previews, including disguised private-key files.
+      const file = await open(target.canonical, 'r')
+      try {
+        const prefix = Buffer.alloc(Math.min((await file.stat()).size, previewLimit))
+        let offset = 0
+        while (offset < prefix.length) {
+          const { bytesRead } = await file.read(prefix, offset, prefix.length - offset, offset)
+          if (!bytesRead) break
+          offset += bytesRead
+        }
+        if (privateKeyHeader.test(prefix.subarray(0, offset).toString('utf8'))) {
+          throw new BridgeError('PRIVATE_FILE', '不能打开私钥内容', 403)
+        }
+      } finally { await file.close() }
+    }
+    return target.canonical
   }
 
   private async readTextFile(file: string): Promise<string> {
     const info = await stat(file)
     if (!info.isFile()) throw new BridgeError('NOT_FILE', '请选择普通文件')
-    if (info.size > 512 * 1024) throw new BridgeError('FILE_LARGE', '文件超过 512 KB，请在编辑器中查看')
+    if (info.size > previewLimit) throw new BridgeError('FILE_LARGE', '文件超过 512 KB，请在编辑器中查看')
     const contents = await readFile(file)
-    if (contents.length > 512 * 1024) throw new BridgeError('FILE_LARGE', '文件超过 512 KB，请在编辑器中查看')
+    if (contents.length > previewLimit) throw new BridgeError('FILE_LARGE', '文件超过 512 KB，请在编辑器中查看')
     if (contents.includes(0)) throw new BridgeError('BINARY_FILE', '暂不预览二进制文件')
     return contents.toString('utf8')
   }
