@@ -1,0 +1,12 @@
+{
+  "name": "dsh-todo-note",
+  "version": "0.1.8",
+  "commit": "4d9db4132f1b03ad0f40e7e41170be0223b5f724",
+  "source": "local dsh-todo-note repository",
+  "license": "MIT",
+  "sha256": {
+    "lib/model.js": "78abcfa896814dfe621010774bcac460676916ca0906af4cf67218fa433bfe49",
+    "lib/client.js": "ef2779b684fa742e4198b7261f9c8f3540d36b640258afd065187b7e931da7c9",
+    "LICENSE": "308897c0741f38bdffeb88540e5a3f0f53e4b658fde008507e7910667021c996"
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "cweb-bridge",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "dev": "node --watch server/main.ts --dev",
+    "start": "node server/main.ts",
+    "build": "vite build",
+    "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts",
+    "test:browser": "node tests/messages.browser.mjs && node tests/browser.mjs && node tests/scroll.browser.mjs && node tests/work-modes.browser.mjs && node tests/composer.browser.mjs && node tests/feedback.browser.mjs && node tests/navigation.browser.mjs && node tests/review.browser.mjs && node tests/native-questions.browser.mjs && node tests/run-ui.browser.mjs",
+    "setup:codex": "node scripts/setup-codex.mjs"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "clsx": "2.1.1",
+    "katex": "^0.16.47",
+    "lucide-react": "^0.468.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-math": "3.0.0",
+    "micromark-core-commonmark": "2.0.4",
+    "micromark-extension-math": "3.1.0",
+    "micromark-factory-space": "2.1.0",
+    "micromark-util-character": "2.1.1",
+    "micromark-util-classify-character": "2.0.1",
+    "micromark-util-symbol": "2.0.1",
+    "micromark-util-types": "2.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.3",
+    "remark-gfm": "^4.0.0",
+    "ws": "^8.22.2",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/katex": "^0.16.8",
+    "@types/node": "^22.20.1",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^4.7.0",
+    "playwright": "1.48.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.4.3"
+  }
+}

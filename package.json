@@ -1,0 +1,22 @@
+{
+  "name": "cweb-local",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "setup:codex": "npm --prefix bridge run setup:codex",
+    "start": "node scripts/cweb.mjs",
+    "dev": "node --watch bridge/server/main.ts --dev",
+    "build": "npm --prefix bridge run build",
+    "check": "npm --prefix bridge run check",
+    "test": "npm --prefix bridge test",
+    "test:browser": "npm --prefix bridge run test:browser",
+    "stop": "node scripts/cweb.mjs stop",
+    "status": "node scripts/cweb.mjs status",
+    "serve": "node bridge/server/main.ts"
+  }
+}

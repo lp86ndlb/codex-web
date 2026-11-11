@@ -1,0 +1,13 @@
+{
+  "title": "项目交互概览",
+  "items": [
+    {"type":"grid","cols":2,"items":[{"type":"stat","label":"已通过检查","value":"12"},{"type":"progress","label":"实现进度","value":85}]},
+    {"type":"chart","kind":"bars","data":[{"label":"接口","value":12},{"label":"界面","value":8},{"label":"测试","value":16}]},
+    {"type":"table","columns":["模块","状态"],"rows":[["CLI 桥接","正常"],["工作区","已分类"]]},
+    {"type":"input","id":"project","label":"项目名称","placeholder":"输入项目名称"},
+    {"type":"radio","group":"target","label":"优化重点","options":["性能","交互"]},
+    {"type":"submit","label":"提交项目选择","action":"project_choice","groups":["project","target"]},
+    {"type":"accordion","items":[{"title":"高级图表","items":[{"type":"echart","title":"检查统计","preset":"bar","height":240,"data":[{"label":"通过","value":12},{"label":"待处理","value":3}]}]},{"title":"流程预览","items":[{"type":"mermaid","code":"graph LR\nA[输入]-->B[CLI执行]\nB-->C[结果]"}]}]},
+    {"type":"plot","title":"本地函数图","xMin":-3,"xMax":3,"series":[{"expr":"a*sin(x)","label":"曲线","params":[{"name":"a","value":1,"min":0,"max":3}]}]}
+  ]
+}

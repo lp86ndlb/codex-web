@@ -1,0 +1,55 @@
+# Local state contains session data, attachments, credentials and logs.
+/bridge/.data/
+/.codex-web/
+/.codex/
+
+# Dependencies and generated application/test outputs; keep package-lock.json.
+node_modules/
+/bridge/dist/
+/bridge/test-results/
+/bridge/playwright-report/
+/bridge/coverage/
+/coverage/
+*.tsbuildinfo
+
+# Workspace-local tools, temporary builds and source/data backups.
+/.cache/
+/.local-tools/
+/backups/
+/upstream/
+/tmp/
+
+# Local environment values and package-manager credentials. Examples are safe
+# to commit only when they contain placeholders rather than real secrets.
+.env
+.env.*
+.envrc
+.envrc.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+!.envrc.example
+.npmrc
+!.npmrc.example
+auth.json
+credentials.json
+token.json
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Editor, OS and process artifacts.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.pid
+*.sock
+*.swp
+*.swo
+*~

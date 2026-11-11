@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+CWEB_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec node "$CWEB_ROOT/scripts/cweb.mjs" "$@"
