@@ -1,6 +1,21 @@
 /** Short descriptions of observable tool actions, never inferred reasoning. */
 const leaf = (path: string) => path.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) || path
 const short = (value: string, limit = 54) => value.length > limit ? `${value.slice(0, limit)}…` : value
+const itemTypeLabels: Record<string, string> = {
+  userMessage: '用户消息', agentMessage: '助手回复', reasoning: '任务摘要', plan: '计划',
+  commandExecution: '执行本地命令', fileChange: '修改文件', mcpToolCall: '调用外部工具', dynamicToolCall: '调用工具',
+  subAgentActivity: '子代理活动', collabAgentToolCall: '子代理协作', webSearch: '搜索网页',
+  imageView: '查看图片', imageGeneration: '生成图片', sleep: '等待', contextCompaction: '压缩上下文',
+  enteredReviewMode: '进入审查', exitedReviewMode: '结束审查', hookPrompt: '钩子提示', functionCallOutput: '工具返回结果',
+}
+const messageTypes = new Set(['userMessage', 'agentMessage', 'reasoning', 'plan'])
+const effortLabels: Record<string, string> = { none: '关闭', minimal: '最小', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最高', ultra: '极致', auto: '自动' }
+/** Protocol identifiers stay intact; only their visible headings are localized. */
+export function describeItemType(type: string): string { return Object.hasOwn(itemTypeLabels, type) ? itemTypeLabels[type] : '其他操作' }
+export function isToolActivityType(type: string): boolean { return Object.hasOwn(itemTypeLabels, type) && !messageTypes.has(type) }
+export function describeEffort(effort: string): string {
+  return Object.hasOwn(effortLabels, effort) ? effortLabels[effort] : effort
+}
 export function describeCommand(command: string, actions: { type: string; name?: string; path?: string; query?: string }[] = []): string {
   const action = actions.find(value => value.type !== 'unknown')
   if (action?.type === 'read') return `读取 ${short(action.name || leaf(action.path || '') || '项目文件')}`

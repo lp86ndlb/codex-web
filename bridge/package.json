@@ -12,7 +12,7 @@
     "build": "vite build",
     "check": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
-    "test:browser": "node tests/messages.browser.mjs && node tests/browser.mjs && node tests/scroll.browser.mjs && node tests/work-modes.browser.mjs && node tests/composer.browser.mjs && node tests/feedback.browser.mjs && node tests/navigation.browser.mjs && node tests/review.browser.mjs && node tests/native-questions.browser.mjs && node tests/run-ui.browser.mjs && node tests/file-links.browser.mjs && node tests/activity-collapse.browser.mjs && node tests/turn-rail.browser.mjs && node tests/local-images.browser.mjs",
+    "test:browser": "node tests/messages.browser.mjs && node tests/browser.mjs && node tests/scroll.browser.mjs && node tests/work-modes.browser.mjs && node tests/composer.browser.mjs && node tests/feedback.browser.mjs && node tests/navigation.browser.mjs && node tests/review.browser.mjs && node tests/native-questions.browser.mjs && node tests/run-ui.browser.mjs && node tests/file-links.browser.mjs && node tests/activity-collapse.browser.mjs && node tests/history-window.browser.mjs && node tests/turn-rail.browser.mjs && node tests/local-images.browser.mjs",
     "setup:codex": "node scripts/setup-codex.mjs"
   },
   "dependencies": {

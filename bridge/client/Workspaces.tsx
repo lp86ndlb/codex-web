@@ -135,7 +135,7 @@ export const WorkspaceGroups = memo(function WorkspaceGroups(p: GroupProps) {
 export function WorkspaceHome({ workspaces, threads, onOpen, onAdd, onThread }: {
   workspaces: WorkspaceInfo[]; threads: ThreadSummary[]; onOpen: (id: string) => void; onAdd: () => void; onThread: (id: string) => void
 }) {
-  return <section className="workspace-home"><div className="welcome-eyebrow"><span />CWEB · LOCAL</div><h1>每个项目，<br /><span>都有自己的上下文。</span></h1><p>在不同工作区之间切换，接着上次的想法继续。</p>
+  return <section className="workspace-home"><div className="welcome-eyebrow"><span />CWEB · 本地</div><h1>每个项目，<br /><span>都有自己的上下文。</span></h1><p>在不同工作区之间切换，接着上次的想法继续。</p>
     <div className="home-section-title"><h2>你的工作区 <span>{workspaces.length}</span></h2><button onClick={onAdd}><Plus size={16} />添加工作区</button></div>
     <div className="workspace-cards">{workspaces.map(workspace => {
       const rows = threads.filter(thread => workspaceFor(workspaces, thread.cwd)?.id === workspace.id)

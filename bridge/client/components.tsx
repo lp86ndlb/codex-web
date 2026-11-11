@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type DetailsHTMLAttributes, type ReactNode } from 'react'
 import { Check, ChevronDown, ChevronUp, ChevronRight, Copy, FileCode2, LoaderCircle, Pencil, ShieldCheck, SquareTerminal, X } from 'lucide-react'
 import type { Approval, Item } from '../shared/types.ts'
 import { api, message } from './api.ts'
@@ -8,10 +8,11 @@ import { Markdown } from './Markdown.tsx'
 import { TextChoiceSummary } from './ChoiceHost.tsx'
 import { StateDot } from './dsh/StateDot.tsx'
 import { DisclosureRow } from './dsh/DisclosureRow.tsx'
-import { describeCommand, describeTool } from '../shared/activity.ts'
+import { describeCommand, describeItemType, describeTool } from '../shared/activity.ts'
 import { MessageTime } from './MessageMeta.tsx'
 import { Questionnaire } from './Questionnaire.tsx'
 import { useExitAnimation, useExitList } from './Motion.tsx'
+import { useDisclosureContent } from './useDisclosureContent.ts'
 
 export function IconButton({ label, children, onClick, disabled = false, className = '' }: {
   label: string; children: ReactNode; onClick: () => void; disabled?: boolean; className?: string
@@ -34,24 +35,47 @@ export function Diff({ text }: { text: string }) {
   return <pre className="diff-code">{text.split('\n').map((line, i) => <span key={i} className={line.startsWith('+') && !line.startsWith('+++') ? 'added' : line.startsWith('-') && !line.startsWith('---') ? 'removed' : line.startsWith('@@') ? 'hunk' : ''}>{line || ' '}{'\n'}</span>)}</pre>
 }
 
-export function activityTitle(item: Item) { return item.activity || (item.type === 'commandExecution' ? describeCommand(item.command || '') : item.type === 'fileChange' ? `更新 ${item.changes?.length || 0} 个文件` : item.tool ? describeTool(item.tool) : item.type === 'plan' ? '更新执行计划' : '任务摘要') }
+export function activityTitle(item: Item) { return item.activity || (item.type === 'commandExecution' ? describeCommand(item.command || '') : item.type === 'fileChange' ? `更新 ${item.changes?.length || 0} 个文件` : item.tool ? describeTool(item.tool) : item.type === 'plan' ? '更新执行计划' : describeItemType(item.type)) }
+const ActivityGroupBody = memo(function ActivityGroupBody({ items }: { items: Item[] }) {
+  return <div className="activity-group-body">{items.map(item => <TranscriptItem key={item.id} item={item} />)}</div>
+})
 export const ActivityGroup = memo(function ActivityGroup({ items, expanded = false, onToggle }: { items: Item[]; expanded?: boolean; onToggle: () => void }) {
   const running = items.some(item => item.status === 'inProgress'); const failed = items.some(item => item.status === 'failed')
-  return <section className="activity-group" data-turn-id={items[0]?.turnId} data-activity-id={items[0]?.id}><DisclosureRow icon={<StateDot state={running ? 'ongoing' : failed ? 'error' : 'done'} />} title={running ? '正在处理' : `处理步骤 · ${items.length}`} open={expanded} expandable onToggle={onToggle} running={running} expandOnRowClick collapsedContent={<span className="activity-preview">{activityTitle(items.at(-1)!)}</span>}><div className="activity-group-body">{items.map(item => <TranscriptItem key={item.id} item={item} />)}</div></DisclosureRow></section>
+  return <section className="activity-group" data-turn-id={items[0]?.turnId} data-activity-id={items[0]?.id}><DisclosureRow icon={<StateDot state={running ? 'ongoing' : failed ? 'error' : 'done'} />} title={running ? '正在处理' : `处理步骤 · ${items.length}`} open={expanded} expandable lazy onToggle={onToggle} running={running} expandOnRowClick collapsedContent={<span className="activity-preview">{activityTitle(items.at(-1)!)}</span>}><ActivityGroupBody items={items} /></DisclosureRow></section>
 })
+
+/** Keep native details semantics while deferring raw output, diffs and Markdown. */
+function ToolDetails({ expanded = false, onExpandedToggle, summary, children, ...props }: Omit<DetailsHTMLAttributes<HTMLDetailsElement>, 'open' | 'onToggle'> & { expanded?: boolean; onExpandedToggle?: () => void; summary: ReactNode }) {
+  const element = useRef<HTMLDetailsElement>(null)
+  const [localOpen, setLocalOpen] = useState(expanded)
+  const [previousExpanded, setPreviousExpanded] = useState(expanded)
+  if (previousExpanded !== expanded) { setPreviousExpanded(expanded); setLocalOpen(expanded) }
+  const open = onExpandedToggle ? expanded : localOpen
+  const mounted = useDisclosureContent(open, element, '::details-content')
+  const retainedChildren = useRef(children)
+  if (open) retainedChildren.current = children
+  const toggle = () => onExpandedToggle ? onExpandedToggle() : setLocalOpen(value => !value)
+  return <details {...props} ref={element} open={open} onToggle={event => {
+    // Also honor native/assistive toggles and explicit DOM open changes. React
+    // controlled updates emit the same event and already match our state.
+    if (event.currentTarget.open !== open) {
+      if (onExpandedToggle) onExpandedToggle()
+      else setLocalOpen(event.currentTarget.open)
+    }
+  }}><summary onClick={event => { event.preventDefault(); toggle() }}>{summary}</summary>{mounted ? retainedChildren.current : null}</details>
+}
 
 export const TranscriptItem = memo(function TranscriptItem({ item, expanded = false, onExpandedToggle, onEdit, editDisabled = false }: { item: Item; expanded?: boolean; onExpandedToggle?: () => void; onEdit?: (item: Item) => void; editDisabled?: boolean }) {
   if (item.type === 'userMessage') return <article className="user-message" data-message-id={item.id}><div className="user-bubble"><Markdown text={item.text} genui={false} />{Boolean(item.attachments?.length) && <div className="message-attachments">{item.attachments!.map(file => <a className="message-attachment" href={file.url} key={file.id} target="_blank" rel="noopener noreferrer">{file.kind === 'image' && <img src={file.url} alt={file.name} loading="lazy" />}<span><FileCode2 size={14} />{file.name}</span></a>)}</div>}{Boolean(item.skills?.length) && <div className="message-skills">{item.skills!.map(skill => <span key={skill.path} title={skill.path}>${skill.name}</span>)}</div>}</div><div className="user-message-footer"><MessageTime item={item} /><div className="message-actions"><CopyButton text={item.text} />{onEdit && <IconButton label="编辑并从此处继续" disabled={editDisabled} onClick={() => onEdit(item)}><Pencil size={14} /></IconButton>}</div></div></article>
-  if (item.type === 'agentMessage') return <GenuiMessage.Provider value={{ id: item.id, streaming: item.status === 'inProgress' }}><article className={item.phase === 'commentary' ? 'agent-message agent-commentary' : 'agent-message'}>{item.phase !== 'commentary' ? <div className="message-label"><BrandMark size={23} /> Codex<MessageTime item={item} /></div> : <MessageTime item={item} />}<Markdown text={item.text} streaming={item.status === 'inProgress'} collapseCode={item.phase === 'commentary'} /><TextChoiceSummary item={item} slot={item.id} streaming={item.status === 'inProgress'} />{item.text && item.phase !== 'commentary' && <div className="message-actions"><CopyButton text={item.text} /></div>}</article></GenuiMessage.Provider>
-  if (item.type === 'commandExecution') return <details className="tool-card" open={expanded}>
-    <summary><SquareTerminal size={16} /><span className="tool-description">{activityTitle(item)}</span><span className={`tool-status ${item.status === 'failed' ? 'failed' : ''}`}>{item.status === 'inProgress' ? <StateDot state="ongoing" /> : item.exitCode === 0 ? <Check size={14} /> : item.exitCode !== null && item.exitCode !== undefined ? `退出 ${item.exitCode}` : item.status === 'declined' ? '已拒绝' : '结束'}</span><ChevronRight className="disclosure" size={14} /></summary>
+  if (item.type === 'agentMessage') return <GenuiMessage.Provider value={{ id: item.id, streaming: item.status === 'inProgress' }}><article data-message-id={item.id} className={item.phase === 'commentary' ? 'agent-message agent-commentary' : 'agent-message'}>{item.phase !== 'commentary' ? <div className="message-label"><BrandMark size={23} /> Codex<MessageTime item={item} /></div> : <MessageTime item={item} />}<Markdown text={item.text} streaming={item.status === 'inProgress'} collapseCode={item.phase === 'commentary'} /><TextChoiceSummary item={item} slot={item.id} streaming={item.status === 'inProgress'} />{item.text && item.phase !== 'commentary' && <div className="message-actions"><CopyButton text={item.text} /></div>}</article></GenuiMessage.Provider>
+  if (item.type === 'commandExecution') return <ToolDetails className="tool-card" expanded={expanded} summary={<><SquareTerminal size={16} /><span className="tool-description">{activityTitle(item)}</span><span className={`tool-status ${item.status === 'failed' ? 'failed' : ''}`}>{item.status === 'inProgress' ? <StateDot state="ongoing" /> : item.exitCode === 0 ? <Check size={14} /> : item.exitCode !== null && item.exitCode !== undefined ? `退出 ${item.exitCode}` : item.status === 'declined' ? '已拒绝' : '结束'}</span><ChevronRight className="disclosure" size={14} /></>}>
     <div className="tool-output">{item.command && <div className="full-command">$ {item.command}</div>}<pre>{item.output || (item.status === 'inProgress' ? '正在执行，暂时没有输出' : '命令已结束，没有文本输出')}</pre><CopyButton text={(item.command || '') + '\n' + (item.output || '')} /></div>
-  </details>
-  if (item.type === 'fileChange') return <details className="tool-card" open={expanded}><summary><FileCode2 size={16} /><span>修改 {item.changes?.length || 0} 个文件</span><span className="tool-status">{item.status === 'declined' ? '已拒绝' : item.status === 'failed' ? '失败' : item.status === 'inProgress' ? '进行中' : '已完成'}</span><ChevronRight className="disclosure" size={14} /></summary><div>{item.changes?.map((change, index) => <section className="file-change" key={index}><div className="file-caption">{change.path}</div><Diff text={change.diff} /></section>)}</div></details>
+  </ToolDetails>
+  if (item.type === 'fileChange') return <ToolDetails className="tool-card" expanded={expanded} summary={<><FileCode2 size={16} /><span>修改 {item.changes?.length || 0} 个文件</span><span className="tool-status">{item.status === 'declined' ? '已拒绝' : item.status === 'failed' ? '失败' : item.status === 'inProgress' ? '进行中' : '已完成'}</span><ChevronRight className="disclosure" size={14} /></>}><div>{item.changes?.map((change, index) => <section className="file-change" key={index}><div className="file-caption">{change.path}</div><Diff text={change.diff} /></section>)}</div></ToolDetails>
   if (item.type === 'dynamicToolCall' && item.tool === 'render_ui' && item.ui) return <GenuiFence raw={JSON.stringify(item.ui)} slot={item.id} />
-  if (['dynamicToolCall', 'mcpToolCall'].includes(item.type)) return <details className="tool-card reasoning" open={expanded}><summary><ChevronRight className="disclosure" size={14} /><span>{activityTitle(item)}</span><span className="tool-status">{item.status === 'inProgress' ? <LoaderCircle size={14} className="spin" /> : item.status === 'failed' ? '失败' : <Check size={14} />}</span></summary><pre>{item.text || (item.status === 'inProgress' ? '工具正在处理…' : '操作已结束')}</pre></details>
+  if (['dynamicToolCall', 'mcpToolCall'].includes(item.type)) return <ToolDetails className="tool-card reasoning" expanded={expanded} summary={<><ChevronRight className="disclosure" size={14} /><span>{activityTitle(item)}</span><span className="tool-status">{item.status === 'inProgress' ? <LoaderCircle size={14} className="spin" /> : item.status === 'failed' ? '失败' : <Check size={14} />}</span></>}><pre>{item.text || (item.status === 'inProgress' ? '工具正在处理…' : '操作已结束')}</pre></ToolDetails>
   if (!item.text.trim()) return null
-  return <details className="tool-card reasoning" open={expanded} data-activity-id={item.id} data-turn-id={item.turnId}><summary onClick={onExpandedToggle ? event => { event.preventDefault(); onExpandedToggle() } : undefined}><ChevronRight className="disclosure" size={14} /><span>{item.type === 'reasoning' ? '任务摘要' : item.type === 'plan' ? '计划' : item.type}</span></summary><Markdown text={item.text} genui={false} /></details>
+  return <ToolDetails className="tool-card reasoning" expanded={expanded} onExpandedToggle={onExpandedToggle} data-activity-id={item.id} data-turn-id={item.turnId} summary={<><ChevronRight className="disclosure" size={14} /><span>{describeItemType(item.type)}</span></>}><Markdown text={item.text} genui={false} /></ToolDetails>
 })
 
 export function ApprovalCard({ approval, onError, onBack }: { approval: Approval; onError: (error: string) => void; onBack?: () => void }) {

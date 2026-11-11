@@ -1,5 +1,6 @@
-import { memo, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { memo, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
+import { useDisclosureContent } from '../useDisclosureContent.ts'
 import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular } from './icons/index.tsx'
 import { TextShimmer } from './TextShimmer.tsx'
 import css from './DisclosureRow.module.css'
@@ -23,6 +24,8 @@ export interface DisclosureRowProps {
   /** Independent action beside the title, outside the disclosure target and shimmer. */
   headerAccessory?: ReactNode
   children?: ReactNode
+  /** Mount expensive contents on demand and release them after closing. */
+  lazy?: boolean | undefined
   className?: string | undefined
   rowClassName?: string | undefined
   /** Sizing class for the header text area, beside the leading icon. */
@@ -53,6 +56,7 @@ export const DisclosureRow = memo(function DisclosureRow({
   collapsedContent,
   headerAccessory,
   children,
+  lazy = false,
   className,
   rowClassName,
   contentClassName,
@@ -61,6 +65,10 @@ export const DisclosureRow = memo(function DisclosureRow({
   chevronClassName,
   titleClassName,
 }: DisclosureRowProps) {
+  const body = useRef<HTMLDivElement>(null)
+  const mounted = useDisclosureContent(!lazy || open, body)
+  const retainedChildren = useRef(children)
+  if (!lazy || open) retainedChildren.current = children
   const rowExpands = expandable && expandOnRowClick
   const toggleFromLeading = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation()
@@ -118,7 +126,7 @@ export const DisclosureRow = memo(function DisclosureRow({
         </div>
         {headerAccessory}
       </div>
-      <div className={css.body} data-open={open || undefined} {...(!open ? { inert: '' } : {})}><div className={css.bodyInner}>{children}</div></div>
+      <div ref={body} className={css.body} data-open={open || undefined} {...(!open ? { inert: '' } : {})}><div className={css.bodyInner}>{mounted ? retainedChildren.current : null}</div></div>
     </div>
   )
 })

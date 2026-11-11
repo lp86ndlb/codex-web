@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Archive, ArrowLeft, Check, ChevronRight, Cpu, Gauge, Keyboard, LoaderCircle, Monitor, Moon, Palette, Plug, Puzzle, RefreshCw, Search, Settings2, ShieldCheck, Sun } from 'lucide-react'
 import type { Bootstrap, ModelOption, Preferences, SessionOptions, SkillInfo, ThreadSummary, ThreadView, WorkspaceInfo } from '../shared/types.ts'
 import { api, message } from './api.ts'
+import { describeEffort } from '../shared/activity.ts'
 import { BrandMark } from './BrandMark.tsx'
 import { Notice, TranscriptItem } from './components.tsx'
 import { shortcuts } from './commands.ts'
@@ -26,7 +27,7 @@ export function Switch({ label, detail, checked, onChange, disabled = false }: {
 function OptionFields({ value, models, onChange, prefix }: { value: SessionOptions; models: ModelOption[]; onChange: (patch: Partial<SessionOptions>) => void; prefix: string }) {
   const efforts = models.find(model => model.id === value.model)?.efforts || ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
   return <div className="option-fields"><label>{prefix}模型<select aria-label={`${prefix}模型`} value={value.model} onChange={event => onChange({ model: event.target.value, effort: '' })}><option value="">CLI 默认模型</option>{value.model && !models.some(model => model.id === value.model) && <option value={value.model}>{value.model}</option>}{models.map(model => <option value={model.id} key={model.id}>{model.label}</option>)}</select></label>
-    <label>{prefix}推理强度<select aria-label={`${prefix}推理强度`} value={value.effort} onChange={event => onChange({ effort: event.target.value })}><option value="">模型默认</option>{efforts.map(effort => <option key={effort} value={effort}>{({ low: '低', medium: '中', high: '高', xhigh: '极高', max: '最高', ultra: 'Ultra', minimal: '最小', none: '关闭' } as Record<string, string>)[effort] || effort}</option>)}</select></label>
+    <label>{prefix}推理强度<select aria-label={`${prefix}推理强度`} value={value.effort} onChange={event => onChange({ effort: event.target.value })}><option value="">模型默认</option>{efforts.map(effort => <option key={effort} value={effort}>{describeEffort(effort)}</option>)}</select></label>
     <label>{prefix}权限<select aria-label={`${prefix}权限`} value={value.mode} onChange={event => onChange({ mode: event.target.value as SessionOptions['mode'], ...(event.target.value === 'danger-full-access' ? { approvalPolicy: 'never' as const } : {}) })}><option value="workspace-write">工作区可写</option><option value="read-only">只读</option><option value="danger-full-access">完全权限</option></select></label>
     <label>{prefix}审批<select aria-label={`${prefix}审批`} disabled={value.mode === 'danger-full-access'} value={value.mode === 'danger-full-access' ? 'never' : value.approvalPolicy} onChange={event => onChange({ approvalPolicy: event.target.value as SessionOptions['approvalPolicy'] })}><option value="on-request">按需审批</option><option value="untrusted">不可信操作先审批</option><option value="never">不请求审批</option></select></label>
   </div>
