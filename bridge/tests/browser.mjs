@@ -69,12 +69,32 @@ try {
   await page.locator('.sidebar').waitFor({ state: 'visible' })
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   const motion = await page.evaluate(async () => {
-    const sidebar = document.querySelector('.sidebar'); const before = sidebar.getBoundingClientRect().width
+    const app = document.querySelector('.app'), sidebar = document.querySelector('.sidebar')
+    // Flush the changed media query before committing React's collapse. Edge
+    // may defer transition startup beyond a fixed timeout on a busy machine.
+    getComputedStyle(app).gridTemplateColumns
+    const before = sidebar.getBoundingClientRect().width
     document.querySelector('[aria-label="收起侧边栏"]').click()
-    await new Promise(resolve => setTimeout(resolve, 70))
-    return { before, during: sidebar.getBoundingClientRect().width }
+    let transition
+    for (let frame = 0; frame < 120; frame++) {
+      transition = app.getAnimations().find(animation => animation instanceof CSSTransition && animation.transitionProperty === 'grid-template-columns')
+      if (transition) break
+      await new Promise(requestAnimationFrame)
+    }
+    if (!transition) throw new Error('Sidebar collapse did not create its grid transition')
+    await transition.ready
+    const duration = Number(transition.effect.getTiming().duration)
+    // Sample a real interpolated frame deterministically, then let the same
+    // transition finish normally; do not weaken the check to final state only.
+    transition.pause(); transition.currentTime = duration / 2
+    await new Promise(requestAnimationFrame)
+    const during = sidebar.getBoundingClientRect().width
+    transition.play(); await transition.finished
+    return { before, during, after: sidebar.getBoundingClientRect().width, duration }
   })
+  assert.ok(motion.duration > 0, JSON.stringify(motion))
   assert.ok(motion.during > 0 && motion.during < motion.before, JSON.stringify(motion))
+  assert.equal(motion.after, 0, JSON.stringify(motion))
   await page.getByRole('button', { name: '展开侧边栏' }).click()
   await page.emulateMedia({ reducedMotion: 'reduce' })
   const centres = await page.locator('.compact-composer .composer-toolbar').evaluate(node => [...node.querySelectorAll('.composer-options > .icon-button, .reference-trigger, .model-select, .effort-select, .permission-menu > summary, .send-button')].map(el => { const box = el.getBoundingClientRect(); return box.top + box.height / 2 }))
@@ -372,6 +392,9 @@ try {
   await genui.locator('[data-genui-echart] canvas, [data-genui-echart] svg').first().waitFor()
   assert.equal(await page.locator('script[src*="/genui/echarts-core.js"]').count(), 1)
   await genui.getByRole('button', { name: '流程预览', exact: true }).click()
+  // Mermaid intentionally waits until its source enters the viewport/lookahead.
+  // Expanding the accordion alone can leave it far above the current reading position.
+  await genui.locator('pre').filter({ hasText: 'graph LR' }).scrollIntoViewIfNeeded()
   await genui.locator('svg').filter({ has: page.locator('.node') }).first().waitFor()
   await page.screenshot({ path: resolve(output, 'genui-interactive.png'), fullPage: true })
   await input.fill('GenUI 面板')
