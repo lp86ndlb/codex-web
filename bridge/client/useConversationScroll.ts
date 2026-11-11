@@ -9,6 +9,7 @@ export function useConversationScroll(viewport: RefObject<HTMLDivElement>, conte
   useEffect(() => {
     const node = viewport.current; const body = content.current
     if (!node || !body) return
+    node.style.removeProperty('scroll-padding-bottom')
     follow.current = true; setAway(false)
     let frame = 0; let lastTop = node.scrollTop; let touchY = 0
     intention.current.direction = 0; let draggingScrollbar = false
@@ -54,7 +55,6 @@ export function useConversationScroll(viewport: RefObject<HTMLDivElement>, conte
       if (height !== dockHeight) {
         dockHeight = height
         node.parentElement?.style.setProperty('--composer-height', `${height}px`)
-        node.style.scrollPaddingBottom = `${height + 8}px`
       }
       schedule()
     }); resize.observe(body); resize.observe(node); if (dock.current) resize.observe(dock.current)

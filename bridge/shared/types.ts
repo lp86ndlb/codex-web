@@ -1,12 +1,14 @@
 export type Mode = 'workspace-write' | 'read-only' | 'danger-full-access'
 export type ApprovalPolicy = 'on-request' | 'untrusted' | 'never'
+export type ActivityCollapseTiming = 'completion' | 'next-input' | 'never'
 export interface SessionOptions { model: string; effort: string; mode: Mode; approvalPolicy: ApprovalPolicy; collaborationMode?: 'default' | 'plan' }
 export interface Preferences extends SessionOptions {
   theme: 'dark' | 'light' | 'system'; fontSize: number; uiFontSize: number
   animations: boolean; sendKey: 'enter' | 'mod-enter'; codeWrap: boolean; showInspector: boolean; genui: boolean; showActivityDetails: boolean
+  activityCollapseTiming: ActivityCollapseTiming
 }
 export const defaultPreferences: Preferences = { model: '', effort: '', mode: 'workspace-write', approvalPolicy: 'on-request',
-  theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: false, genui: true, showActivityDetails: true }
+  theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: false, genui: true, showActivityDetails: true, activityCollapseTiming: 'next-input' }
 export interface UsageWindow { usedPercent: number; windowDurationMins?: number | null; resetsAt?: number | null }
 export interface UsageLimits { limitName?: string | null; primary?: UsageWindow | null; secondary?: UsageWindow | null; credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | null } | null }
 export interface AccountStatus { accountType: string; planType: string; limits: UsageLimits[]; error?: string }

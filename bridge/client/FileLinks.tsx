@@ -4,6 +4,7 @@ import { resolveChatLink } from '../shared/chat-links.ts'
 
 export interface FileDestination { path: string; line?: number; anchor?: string }
 export interface FileLinkScope {
+  workspaceId?: string
   root: string
   cwd: string
   open?: (destination: FileDestination) => void
@@ -13,6 +14,7 @@ export const FileLinks = createContext<FileLinkScope>({ root: '', cwd: '' })
 
 /** Keep ReactMarkdown's image policy, while permitting validated local file destinations. */
 export function chatUrlTransform(url: string, key: string) {
+  if (key === 'src') return resolveChatLink(url, { root: '/', cwd: '/' }).kind === 'file' ? url : defaultUrlTransform(url)
   if (key !== 'href') return defaultUrlTransform(url)
   return resolveChatLink(url, { root: '/', cwd: '/' }).kind === 'invalid' ? '' : url
 }

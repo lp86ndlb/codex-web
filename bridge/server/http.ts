@@ -263,6 +263,15 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
     }
     if (req.method === 'GET') {
       const target = url.searchParams.get('path') || '.'
+      if (path === '/api/image' || path === '/api/image-info') {
+        const workspace = bridge.catalog.get(url.searchParams.get('workspace') || '')
+        if (path === '/api/image-info') { json(res, await workspace.imageInfo(target)); return }
+        const image = await workspace.image(target)
+        res.writeHead(200, { 'Content-Type': image.mime, 'Content-Length': image.data.length, 'Cache-Control': 'no-store',
+          'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(image.path.split('/').at(-1) || 'image').replaceAll("'", '%27')}`,
+          'Cross-Origin-Resource-Policy': 'same-origin' })
+        res.end(image.data); return
+      }
       if (['/api/files', '/api/file', '/api/preview', '/api/references', '/api/changes', '/api/diff', '/api/directory'].includes(path)) {
         const id = url.searchParams.get('workspace') || (bridge.catalog.list().length === 1 ? bridge.catalog.list()[0].id : '')
         const workspace = bridge.catalog.get(id)

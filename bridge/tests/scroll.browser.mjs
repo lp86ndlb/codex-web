@@ -61,15 +61,42 @@ try {
   // New messages must not evict the first visible row while reading history.
   await page.mouse.move(box.x + 80, box.y + 120); await page.mouse.wheel(0, -1100)
   await page.getByRole('button', { name: '回到底部', exact: true }).waitFor()
+  await page.locator('.conversation').evaluate(async node => {
+    let top = node.scrollTop, stable = 0
+    for (let frame = 0; frame < 60 && stable < 4; frame++) {
+      await new Promise(requestAnimationFrame)
+      const next = node.scrollTop; stable = Math.abs(next - top) < 1 ? stable + 1 : 0; top = next
+    }
+  })
+  const input = page.getByLabel('发送给 Codex 的消息', { exact: true })
+  const beforeInputFocus = (await metrics()).top
+  await input.click()
+  const typingStart = await metrics(), typingPositions = []
+  assert.ok(Math.abs(typingStart.top - beforeInputFocus) < 3, `Focusing the sticky input moved the reading position: ${beforeInputFocus} -> ${typingStart.top}`)
+  for (const character of '逐字输入保持阅读位置 abcdef') {
+    await input.pressSequentially(character)
+    await page.waitForTimeout(20)
+    typingPositions.push((await metrics()).top)
+  }
+  assert.ok(typingPositions.every(top => Math.abs(top - typingStart.top) < 3), `Typing moved the paused conversation: ${JSON.stringify({ start: typingStart.top, positions: typingPositions, padding: await page.locator('.conversation').evaluate(node => getComputedStyle(node).scrollPaddingBottom) })}`)
+  await input.fill('增加一行草稿也不该移动历史内容\n'.repeat(5)); await page.waitForTimeout(50)
+  assert.ok(Math.abs((await metrics()).top - typingStart.top) < 3, 'Growing the draft moved the reading position')
+  await input.fill('')
   const reading = await page.locator('.conversation').evaluate(node => ({ top: node.scrollTop, first: node.querySelector('article')?.textContent }))
   await rpc.call('test/append', { threadId: id, text: '阅读历史期间补充的新消息。\n\n'.repeat(20) })
-  await page.getByRole('button', { name: /显示较新的消息/ }).waitFor()
+  await page.locator('.agent-commentary').filter({ hasText: '阅读历史期间补充的新消息' }).waitFor({ state: 'attached' })
+  assert.equal(await page.getByRole('button', { name: /显示较新的消息/ }).count(), 0, 'New output should already be rendered without a refresh')
   const unchanged = await page.locator('.conversation').evaluate(node => ({ top: node.scrollTop, first: node.querySelector('article')?.textContent }))
   assert.equal(unchanged.first, reading.first); assert.ok(Math.abs(unchanged.top - reading.top) < 3, JSON.stringify({ reading, unchanged }))
   await page.locator('.conversation').focus(); await page.keyboard.press('End'); await bottom()
   await page.locator('.agent-commentary').filter({ hasText: '阅读历史期间补充的新消息' }).waitFor()
 
   // The DSH-style rail must load a prompt outside the current 60-message window.
+  await page.getByRole('navigation', { name: '对话回溯', exact: true }).hover()
+  await page.locator('.turn-navigator-scroll').evaluate(async node => {
+    node.scrollTop = 0
+    await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)
+  })
   await page.getByRole('button', { name: '定位第 1 条提问', exact: true }).hover()
   await page.getByRole('tooltip').filter({ hasText: '第 1 条提问' }).waitFor()
   await page.getByRole('button', { name: '定位第 1 条提问', exact: true }).click()
@@ -81,7 +108,6 @@ try {
   await page.getByRole('button', { name: '回到底部', exact: true }).click(); await bottom()
   await page.locator('.agent-commentary').filter({ hasText: '阅读历史期间补充的新消息' }).waitFor()
 
-  const input = page.getByLabel('发送给 Codex 的消息', { exact: true })
   await input.fill(''); await input.press('Shift+ArrowLeft'); await page.locator('[data-message-id="message-128"].jump-highlight').waitFor()
   await input.press('Shift+ArrowLeft'); await page.locator('[data-message-id="message-126"].jump-highlight').waitFor()
   await input.press('Shift+ArrowRight'); await page.locator('[data-message-id="message-128"].jump-highlight').waitFor()

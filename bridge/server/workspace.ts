@@ -10,6 +10,7 @@ const hidden = new Set(['node_modules', 'dist', 'target', 'vendor', 'upstream'])
 const privatePreviewPaths = new Set(['.data', '.git', '.codex', '.ssh', '.aws', '.azure', '.config', '.docker', '.gnupg', '.kube', '.pki', 'node_modules'])
 const privatePreviewNames = new Set(['.npmrc', '.netrc', '.pypirc', '.git-credentials', '.bash_history', '.zsh_history'])
 const previewLimit = 512 * 1024
+const imageLimit = 20 * 1024 * 1024
 const privateKeyHeader = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/
 const previewLanguages: Record<string, string> = {
   '.md': 'markdown', '.mdx': 'markdown', '.json': 'json', '.jsonc': 'json', '.ts': 'typescript', '.tsx': 'tsx',
@@ -143,6 +144,56 @@ export class Workspace {
       } finally { await file.close() }
     }
     return target.canonical
+  }
+
+  /** Serve only recognized raster bytes through the authenticated workspace boundary. */
+  private async imageTarget(path: string) {
+    const target = await this.previewTarget(path)
+    if (target.kind !== 'file') throw new BridgeError('NOT_FILE', '请选择一个图片文件')
+    const file = await open(target.canonical, 'r')
+    try {
+      const info = await file.stat()
+      if (info.size > imageLimit) throw new BridgeError('IMAGE_LARGE', '图片超过 20 MB，请使用默认应用打开', 413)
+      const prefix = Buffer.alloc(Math.min(info.size, 64))
+      const { bytesRead } = await file.read(prefix, 0, prefix.length, 0)
+      const bytes = prefix.subarray(0, bytesRead)
+      let mime = ''
+      if (bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && bytes.toString('ascii', 12, 16) === 'IHDR') mime = 'image/png'
+      else if (bytes.length >= 4 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) mime = 'image/jpeg'
+      else if (bytes.length >= 16 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' && ['VP8 ', 'VP8L', 'VP8X'].includes(bytes.toString('ascii', 12, 16))) mime = 'image/webp'
+      else if (bytes.length >= 10 && ['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6))) mime = 'image/gif'
+      else if (bytes.length >= 16 && bytes.toString('ascii', 4, 8) === 'ftyp') {
+        const boxEnd = Math.min(bytes.readUInt32BE(0), bytes.length)
+        for (let offset = 8; offset + 4 <= boxEnd; offset += 4) {
+          if (offset === 12) continue
+          if (['avif', 'avis'].includes(bytes.toString('ascii', offset, offset + 4))) { mime = 'image/avif'; break }
+        }
+      }
+      if (!mime) throw new BridgeError('IMAGE_TYPE', '暂不预览这种图片格式，请使用 PNG、JPEG、WebP、GIF 或 AVIF', 415)
+      return { target, file, info: { path: target.path, mime, size: info.size, version: `${info.size.toString(36)}-${info.mtimeMs.toString(36)}-${info.ctimeMs.toString(36)}` } }
+    } catch (error) { await file.close(); throw error }
+  }
+
+  async imageInfo(path: string): Promise<{ path: string; mime: string; size: number; version: string }> {
+    const image = await this.imageTarget(path)
+    try { return image.info } finally { await image.file.close() }
+  }
+
+  async image(path: string): Promise<{ path: string; mime: string; version: string; data: Buffer }> {
+    const image = await this.imageTarget(path)
+    try {
+      const chunks: Buffer[] = []; let size = 0
+      while (size <= imageLimit) {
+        const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, imageLimit + 1 - size))
+        const { bytesRead } = await image.file.read(chunk, 0, chunk.length, size)
+        if (!bytesRead) break
+        size += bytesRead
+        if (size > imageLimit) throw new BridgeError('IMAGE_LARGE', '图片超过 20 MB，请使用默认应用打开', 413)
+        chunks.push(chunk.subarray(0, bytesRead))
+      }
+      const data = Buffer.concat(chunks, size)
+      return { path: image.info.path, mime: image.info.mime, version: image.info.version, data }
+    } finally { await image.file.close() }
   }
 
   private async readTextFile(file: string): Promise<string> {

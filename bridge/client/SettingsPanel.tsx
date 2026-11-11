@@ -69,6 +69,8 @@ export function SettingsPanel(props: {
         <Switch label="启用 GenUI" detail="按需加载交互图表、表单、函数图和会话面板" checked={prefs.genui} onChange={genui => change({ genui })} />
         <Switch label="默认显示工作区面板" detail="下次打开页面时展示文件与变更面板" checked={prefs.showInspector} onChange={showInspector => change({ showInspector })} />
         <Switch label="默认显示处理步骤" detail="显示每一步的说明；原始命令、代码与长输出仍按需展开" checked={prefs.showActivityDetails} onChange={showActivityDetails => change({ showActivityDetails })} />
+        <label className="setting-field">工作步骤收起时机<select aria-label="工作步骤收起时机" value={prefs.activityCollapseTiming || 'next-input'} onChange={event => change({ activityCollapseTiming: event.target.value as Preferences['activityCollapseTiming'] })}><option value="completion">回答结束后</option><option value="next-input">下次有新消息时</option><option value="never">不收起</option></select></label>
+        <p className="settings-footnote">只自动收起处理步骤，回答内容保持可见；手动展开后可继续回看。</p>
         <Switch label="启用待办便签" detail="dsh-todo-note · 每个会话独立保存，完成后由你确认" checked={props.plugin} disabled={props.pluginSaving} onChange={props.onPlugin} />
         <div className="settings-callout">旧会话可以在空闲后连接便签工具；每次会话分别保存待办。</div>
       </>}

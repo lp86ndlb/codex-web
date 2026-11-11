@@ -10,6 +10,7 @@ import { GenuiFence, GenuiMessage } from './GenuiHost.tsx'
 import { CodeBlock } from '../plugins/genui/client/cweb-primitives.tsx'
 import { ChoiceFence } from './ChoiceHost.tsx'
 import { ChatLink, chatUrlTransform } from './FileLinks.tsx'
+import { LocalImage } from './LocalImage.tsx'
 const MathRenderer = lazy(() => import('./MathText.tsx'))
 
 /** The DSH grammar preserves code and adds Chinese emphasis + TeX delimiters. */
@@ -25,6 +26,13 @@ function dshMath(this: Processor) {
 function MathText({ source, display }: { source: string; display: boolean }) { return <Suspense fallback={<span className="math-loading">{source}</span>}><MathRenderer source={source} display={display} /></Suspense> }
 const GenuiAllowed = createContext(true)
 const CollapseCode = createContext(true)
+const ImagesStreaming = createContext(false)
+function MarkdownImage({ alt, src }: { alt?: string; src?: string }) {
+  const streaming = useContext(ImagesStreaming)
+  if (!src) return <span className="muted">[图片：{alt || '未加载'}]</span>
+  if (/^https?:\/\//.test(src) || /^\/api\/attachments\/[0-9a-f-]+\/content$/.test(src)) return <img src={src} alt={alt || ''} loading="lazy" />
+  return <LocalImage path={src} alt={alt} streaming={streaming} />
+}
 function MarkdownPre({ children }: { children?: ReactNode }) {
   const slot = useContext(GenuiMessage)
   const allowGenui = useContext(GenuiAllowed)
@@ -45,11 +53,11 @@ export const Markdown = memo(function Markdown({ text, streaming = false, genui 
     const Tag = tag
     return <Tag id={count ? `${base}-${count}` : base}>{children}</Tag>
   }
-  return <GenuiAllowed.Provider value={genui}><CollapseCode.Provider value={collapseCode}><div className="markdown"><ReactMarkdown skipHtml urlTransform={chatUrlTransform} remarkPlugins={streaming ? [remarkGfm, cjk] : [remarkGfm, cjk, dshMath]} components={{
+  return <GenuiAllowed.Provider value={genui}><CollapseCode.Provider value={collapseCode}><ImagesStreaming.Provider value={streaming}><div className="markdown"><ReactMarkdown skipHtml urlTransform={chatUrlTransform} remarkPlugins={streaming ? [remarkGfm, cjk] : [remarkGfm, cjk, dshMath]} components={{
     ...(headingIds ? { h1: heading('h1'), h2: heading('h2'), h3: heading('h3'), h4: heading('h4'), h5: heading('h5'), h6: heading('h6') } : {}),
     pre: MarkdownPre,
     code: ({ className, children }) => /math-inline/.test(className || '') ? <MathText source={String(children || '')} display={false} /> : <code className={className}>{children}</code>,
     a: ChatLink,
-    img: ({ alt, src }) => src && (/^https?:\/\//.test(src) || /^\/api\/attachments\/[0-9a-f-]+\/content$/.test(src)) ? <img src={src} alt={alt || ''} loading="lazy" /> : <span className="muted">[图片：{alt || '未加载'}]</span>,
-  }}>{text || ' '}</ReactMarkdown></div></CollapseCode.Provider></GenuiAllowed.Provider>
+    img: MarkdownImage,
+  }}>{text || ' '}</ReactMarkdown></div></ImagesStreaming.Provider></CollapseCode.Provider></GenuiAllowed.Provider>
 })

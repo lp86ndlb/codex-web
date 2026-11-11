@@ -601,7 +601,7 @@ export class Bridge extends EventEmitter {
         await this.metrics.save(thread)
       }
       const preferences = (await this.preferences.snapshot()).preferences
-      const context = [await this.plugin.context(id, this.todoMcpThreads.has(id) ? this.todoMcpName : undefined), preferences.genui ? genuiInstructions : '', choiceInstructions, 'Keep the user informed with brief, plain-language progress updates describing observable actions and their results. Match the conversation language. Do not expose internal reasoning.'].filter(Boolean).join('\n\n')
+      const context = [await this.plugin.context(id, this.todoMcpThreads.has(id) ? this.todoMcpName : undefined), preferences.genui ? genuiInstructions : '', choiceInstructions, 'To show a workspace screenshot or image in cweb, include a Markdown image with its absolute or workspace-relative file path. PNG, JPEG, WebP, GIF and AVIF are rendered locally; prefer this to returning only a filename.', 'Keep the user informed with brief, plain-language progress updates describing observable actions and their results. Match the conversation language. Do not expose internal reasoning.'].filter(Boolean).join('\n\n')
       if (context) await this.rpc.call('thread/inject_items', { threadId: id,
         items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: context }] }],
       })

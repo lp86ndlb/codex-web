@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowLeft, Code2, Download, ExternalLink, FileText, Folder, LoaderCircle, X } from 'lucide-react'
+import { ArrowLeft, Code2, Download, ExternalLink, FileText, Folder, ImageIcon, LoaderCircle, RefreshCw, X } from 'lucide-react'
 import { api, ApiError, message } from './api.ts'
 import { CopyButton, IconButton } from './components.tsx'
 import { FileLinks, type FileDestination } from './FileLinks.tsx'
@@ -7,8 +7,9 @@ import { Markdown } from './Markdown.tsx'
 import { useExitAction } from './Motion.tsx'
 import type { FileEntry } from '../shared/types.ts'
 import './file-preview.css'
+import { imageContentUrl, isRasterImagePath, type LocalImageInfo } from './LocalImage.tsx'
 
-type Preview = { path: string; kind: 'file' | 'directory'; text?: string; language?: string }
+type Preview = { path: string; kind: 'file' | 'directory' | 'image'; text?: string; language?: string; image?: LocalImageInfo }
 interface Selection extends FileDestination { workspace: string; root: string }
 
 export function FilePreviewProvider({ workspaceId, root = '', cwd = root, children }: { workspaceId?: string; root?: string; cwd?: string; children: ReactNode }) {
@@ -16,7 +17,7 @@ export function FilePreviewProvider({ workspaceId, root = '', cwd = root, childr
   const open = useCallback((destination: FileDestination) => {
     if (workspaceId) setSelection({ ...destination, workspace: workspaceId, root })
   }, [workspaceId, root])
-  const scope = useMemo(() => ({ root, cwd, open: workspaceId ? open : undefined }), [root, cwd, open, workspaceId])
+  const scope = useMemo(() => ({ workspaceId, root, cwd, open: workspaceId ? open : undefined }), [root, cwd, open, workspaceId])
   return <FileLinks.Provider value={scope}>{children}{selection && <FilePreview key={selection.workspace} selection={selection} onNavigate={setSelection} onClose={() => setSelection(null)} />}</FileLinks.Provider>
 }
 
@@ -27,6 +28,7 @@ function FilePreview({ selection, onNavigate, onClose }: { selection: Selection;
   const [previewError, setPreviewError] = useState(''), [opening, setOpening] = useState(false)
   const [openFeedback, setOpenFeedback] = useState(''), [openFailed, setOpenFailed] = useState(false)
   const openRequest = useRef(0)
+  const [reload, setReload] = useState(0), [imageRevision, setImageRevision] = useState(0)
   const [history, setHistory] = useState<Selection[]>([])
   const { closing, exit } = useExitAction(onClose, dialog)
   useEffect(() => {
@@ -38,16 +40,20 @@ function FilePreview({ selection, onNavigate, onClose }: { selection: Selection;
     let cancelled = false
     openRequest.current++; setOpening(false); setOpenFeedback(''); setOpenFailed(false); setPreviewError('')
     setLoading(true); setError(''); setPreview(null); setEntries([]); setSourceView(Boolean(selection.line))
-    void api<Preview>(`/preview?workspace=${encodeURIComponent(selection.workspace)}&path=${encodeURIComponent(selection.path)}`).then(async value => {
+    const query = new URLSearchParams({ workspace: selection.workspace, path: selection.path })
+    const request: Promise<Preview> = isRasterImagePath(selection.path)
+      ? api<LocalImageInfo>(`/image-info?${query}`).then(image => ({ path: image.path, kind: 'image', image }))
+      : api<Preview>(`/preview?${query}`)
+    void request.then(async value => {
       if (cancelled) return
-      setPreview(value)
+      setPreview(value); setImageRevision(previous => Math.max(Date.now(), previous + 1))
       if (value.kind === 'directory') {
         const files = await api<FileEntry[]>(`/files?workspace=${encodeURIComponent(selection.workspace)}&path=${encodeURIComponent(value.path || '.')}`)
         if (!cancelled) setEntries(files)
       }
     }).catch(reason => { if (!cancelled) { setError(message(reason)); setPreviewError(reason instanceof ApiError ? reason.code : '') } }).finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true; openRequest.current++ }
-  }, [selection])
+  }, [selection, reload])
   const markdown = preview?.language === 'markdown'
   const showSource = sourceView || !markdown
   const navigate = useCallback((destination: FileDestination) => {
@@ -70,14 +76,17 @@ function FilePreview({ selection, onNavigate, onClose }: { selection: Selection;
   }, [preview, loading, showSource, selection, anchor])
   const path = preview?.path || selection.path
   const directory = preview?.kind === 'directory' ? path : path.slice(0, Math.max(0, path.lastIndexOf('/')))
-  const scope = useMemo(() => ({ root: selection.root, cwd: `${selection.root}/${directory}`, open: navigate, anchor }), [selection.root, directory, navigate, anchor])
+  const scope = useMemo(() => ({ workspaceId: selection.workspace, root: selection.root, cwd: `${selection.root}/${directory}`, open: navigate, anchor }), [selection.workspace, selection.root, directory, navigate, anchor])
   function download() {
+    if (preview?.kind === 'image' && preview.image) {
+      const link = document.createElement('a'); link.href = imageContentUrl(selection.workspace, preview.path, preview.image.version, imageRevision); link.download = preview.path.split('/').at(-1) || 'image'; link.click(); return
+    }
     if (preview?.kind !== 'file') return
     const url = URL.createObjectURL(new Blob([preview.text || ''], { type: 'text/plain;charset=utf-8' }))
     const link = document.createElement('a'); link.href = url; link.download = preview.path.split('/').at(-1) || 'document.txt'; link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
-  const canOpen = !loading && (Boolean(preview) || ['BINARY_FILE', 'FILE_LARGE'].includes(previewError))
+  const canOpen = !loading && (Boolean(preview) || ['BINARY_FILE', 'FILE_LARGE', 'IMAGE_LARGE'].includes(previewError))
   async function openDefaultApp() {
     if (!canOpen || opening) return
     const request = ++openRequest.current
@@ -91,8 +100,8 @@ function FilePreview({ selection, onNavigate, onClose }: { selection: Selection;
   }
   return <dialog ref={dialog} className="file-preview-dialog" data-exiting={closing || undefined} aria-label="文件预览" onCancel={event => { event.preventDefault(); exit() }} onKeyDown={event => event.stopPropagation()} onClick={event => {
     if (event.target === dialog.current) { const rect = dialog.current.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) exit() }
-  }}><header className="file-preview-header">{history.length > 0 && <IconButton label="返回上一个文件" onClick={() => { onNavigate(history.at(-1)!); setHistory(rows => rows.slice(0, -1)) }}><ArrowLeft size={18} /></IconButton>}{preview?.kind === 'directory' ? <Folder size={19} /> : <FileText size={19} />}<div><strong>{path.split('/').filter(Boolean).at(-1) || '工作区'}</strong><small title={path}>{path || '.'}{selection.line ? ` · 第 ${selection.line} 行` : ''}</small></div><div className="file-preview-actions">{preview?.kind === 'file' && !loading && <>{markdown && <button type="button" className="file-preview-toggle" aria-pressed={sourceView} onClick={() => setSourceView(value => !value)}>{sourceView ? <FileText size={15} /> : <Code2 size={15} />}{sourceView ? '阅读' : '源码'}</button>}<CopyButton text={preview.text || ''} /><IconButton label="下载文件" onClick={download}><Download size={17} /></IconButton></>}<IconButton label="关闭文件预览" onClick={() => exit()}><X size={19} /></IconButton></div></header>
-    <div ref={content} className="file-preview-body" aria-busy={loading}>{loading ? <div className="file-preview-state" role="status"><LoaderCircle size={22} className="spin" />读取文件…</div> : error ? <div className="file-preview-state" role="alert"><FileText size={26} /><strong>无法预览这个路径</strong><p>{error}</p><code>{path}</code></div> : preview?.kind === 'directory' ? <div className="file-preview-directory">{entries.map(entry => <button type="button" key={entry.path} onClick={() => navigate({ path: `${selection.root}/${entry.path}` })}>{entry.directory ? <Folder size={17} /> : <FileText size={17} />}<span>{entry.name}</span>{entry.directory && <span className="muted">目录</span>}</button>)}{!entries.length && <p className="muted">这个目录没有可展示的文件。</p>}</div> : preview && (showSource ? <textarea ref={source} className="file-preview-source" aria-label="文件源码" spellCheck={false} readOnly value={preview.text || ''} /> : <FileLinks.Provider value={scope}><article className="file-preview-document"><Markdown text={preview.text || ''} genui={false} collapseCode={false} headingIds /></article></FileLinks.Provider>)}</div>
-    <footer className="file-preview-footer"><div className="file-preview-info"><span>只读预览 · 当前工作区</span><span className="file-preview-feedback" data-error={openFailed || undefined} role={openFailed ? 'alert' : 'status'}>{openFeedback || <>{preview?.kind === 'file' && `${(preview.text || '').split('\n').length} 行 · `}<kbd>Esc</kbd> 关闭</>}</span></div>{canOpen && <button type="button" className="file-preview-open" disabled={opening} onClick={() => void openDefaultApp()}>{opening ? <LoaderCircle size={16} className="spin" /> : <ExternalLink size={16} />}<span>{opening ? '正在打开…' : '使用默认应用打开'}</span></button>}</footer>
+  }}><header className="file-preview-header">{history.length > 0 && <IconButton label="返回上一个文件" onClick={() => { onNavigate(history.at(-1)!); setHistory(rows => rows.slice(0, -1)) }}><ArrowLeft size={18} /></IconButton>}{preview?.kind === 'directory' ? <Folder size={19} /> : preview?.kind === 'image' ? <ImageIcon size={19} /> : <FileText size={19} />}<div><strong>{path.split('/').filter(Boolean).at(-1) || '工作区'}</strong><small title={path}>{path || '.'}{selection.line ? ` · 第 ${selection.line} 行` : ''}</small></div><div className="file-preview-actions">{preview?.kind === 'file' && !loading && <>{markdown && <button type="button" className="file-preview-toggle" aria-pressed={sourceView} onClick={() => setSourceView(value => !value)}>{sourceView ? <FileText size={15} /> : <Code2 size={15} />}{sourceView ? '阅读' : '源码'}</button>}<CopyButton text={preview.text || ''} /><IconButton label="下载文件" onClick={download}><Download size={17} /></IconButton></>}{preview?.kind === 'image' && !loading && <><IconButton label="刷新图片" onClick={() => setReload(value => value + 1)}><RefreshCw size={17} /></IconButton><IconButton label="下载图片" onClick={download}><Download size={17} /></IconButton></>}<IconButton label="关闭文件预览" onClick={() => exit()}><X size={19} /></IconButton></div></header>
+    <div ref={content} className="file-preview-body" aria-busy={loading}>{loading ? <div className="file-preview-state" role="status"><LoaderCircle size={22} className="spin" />读取文件…</div> : error ? <div className="file-preview-state" role="alert"><FileText size={26} /><strong>无法预览这个路径</strong><p>{error}</p><code>{path}</code></div> : preview?.kind === 'image' && preview.image ? <div className="file-preview-image-stage"><img key={imageRevision} src={imageContentUrl(selection.workspace, preview.path, preview.image.version, imageRevision)} alt={path.split('/').at(-1) || '图片预览'} onError={() => setError('图片无法解码，可刷新图片或使用默认应用打开')} /></div> : preview?.kind === 'directory' ? <div className="file-preview-directory">{entries.map(entry => <button type="button" key={entry.path} onClick={() => navigate({ path: `${selection.root}/${entry.path}` })}>{entry.directory ? <Folder size={17} /> : <FileText size={17} />}<span>{entry.name}</span>{entry.directory && <span className="muted">目录</span>}</button>)}{!entries.length && <p className="muted">这个目录没有可展示的文件。</p>}</div> : preview && (showSource ? <textarea ref={source} className="file-preview-source" aria-label="文件源码" spellCheck={false} readOnly value={preview.text || ''} /> : <FileLinks.Provider value={scope}><article className="file-preview-document"><Markdown text={preview.text || ''} genui={false} collapseCode={false} headingIds /></article></FileLinks.Provider>)}</div>
+    <footer className="file-preview-footer"><div className="file-preview-info"><span>只读预览 · 当前工作区</span><span className="file-preview-feedback" data-error={openFailed || undefined} role={openFailed ? 'alert' : 'status'}>{openFeedback || <>{preview?.kind === 'file' ? `${(preview.text || '').split('\n').length} 行 · ` : preview?.kind === 'image' ? '本地图片 · ' : ''}<kbd>Esc</kbd> 关闭</>}</span></div>{canOpen && <button type="button" className="file-preview-open" disabled={opening} onClick={() => void openDefaultApp()}>{opening ? <LoaderCircle size={16} className="spin" /> : <ExternalLink size={16} />}<span>{opening ? '正在打开…' : '使用默认应用打开'}</span></button>}</footer>
   </dialog>
 }
