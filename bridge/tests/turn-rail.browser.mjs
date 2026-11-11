@@ -51,16 +51,24 @@ async function choose(session) {
   await page.locator(`[data-thread-id="${session.id}"]`).click()
   await rail.waitFor(); await active(session.turns.length)
 }
+async function centered() {
+  const position = await rail.evaluate(node => {
+    const bounds = node.getBoundingClientRect(), stage = node.parentElement.getBoundingClientRect(), dock = document.querySelector('.composer-dock').getBoundingClientRect()
+    return { center: bounds.top + bounds.height / 2, expected: (stage.top + dock.top) / 2, height: bounds.height }
+  })
+  assert.ok(Math.abs(position.center - position.expected) < 2, `The rail should stay centered above the composer: ${JSON.stringify(position)}`)
+  return position
+}
 try {
   await page.goto(`http://127.0.0.1:${app.server.address().port}`)
   await choose(short)
-  const position = await rail.evaluate(node => ({ bottom: node.getBoundingClientRect().bottom, height: node.getBoundingClientRect().height, dock: document.querySelector('.composer-dock').getBoundingClientRect().top }))
-  assert.ok(Math.abs(position.dock - position.bottom - 16) < 2, JSON.stringify(position))
+  const position = await centered()
   assert.ok(position.height < 50, JSON.stringify(position))
   await page.screenshot({ path: resolve(output, 'turn-rail-short.png'), fullPage: true })
 
   await choose(long); await visible(100)
-  assert.ok(await list.evaluate(node => node.scrollTop > 0), 'A long rail must open at its current topic, not its first mark')
+  await centered()
+  assert.ok(await list.evaluate(node => node.scrollTop > 0 && node.scrollHeight - node.clientHeight - node.scrollTop < 2), 'The rail stays centered while its internal options open at the latest/bottom mark')
   await conversation.evaluate(node => {
     node.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }))
     const target = node.querySelector('.user-message[data-message-id="长对话回溯-user-90"]')
@@ -93,6 +101,6 @@ try {
   await conversation.evaluate(node => { node.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true })); node.scrollTop = 100 })
   await active(2)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ bottomAnchored: true, longRailCurrentRevealed: true, followsReadingPosition: true, pagedWindowBottom: true, jumpLatest: true, railDoesNotScrollChat: true, tooltipWithinConversation: true, absentPromptInRenderedWindow: true, pageErrors: errors }))
+  console.log(JSON.stringify({ railCentered: true, latestOptionsAtBottom: true, longRailCurrentRevealed: true, followsReadingPosition: true, pagedWindowBottom: true, jumpLatest: true, railDoesNotScrollChat: true, tooltipWithinConversation: true, absentPromptInRenderedWindow: true, pageErrors: errors }))
 } catch (error) { await page.screenshot({ path: resolve(output, 'turn-rail-failure.png'), fullPage: true }).catch(() => {}); throw error }
 finally { await browser.close(); await app.close(); await rm(root, { recursive: true, force: true }) }

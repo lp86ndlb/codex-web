@@ -32,8 +32,9 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
   const tailStart = windowEnd !== null && liveStart !== null ? Math.max(end, liveStart) : items.length
   const renderedItems = useMemo(() => [...items.slice(start, end), ...items.slice(tailStart)], [items, start, end, tailStart])
   const automatic = useMemo(() => activityExpansion(items, thread, expanded, collapseTiming), [items, thread?.turnId, thread?.status, thread?.runs, expanded, collapseTiming])
-  const isOpen = (id: string) => manualOpen[id] ?? automatic.get(id) ?? false
-  const toggle = (id: string) => setManualOpen(previous => ({ ...previous, [id]: !(previous[id] ?? automatic.get(id) ?? false) }))
+  const automaticOpen = (id: string, members?: Item[]) => members ? members.some(item => automatic.get(item.id)) : automatic.get(id) ?? false
+  const isOpen = (id: string, members?: Item[]) => manualOpen[id] ?? automaticOpen(id, members)
+  const toggle = (id: string, members?: Item[]) => setManualOpen(previous => ({ ...previous, [id]: !(previous[id] ?? automaticOpen(id, members)) }))
   useLayoutEffect(() => {
     if (!jumpTo || jumpTo.seq === handled.current) return
     if (!jumpTo.id) { setWindowEnd(null); setLiveStart(null); setVisible(60); handled.current = jumpTo.seq; return }
@@ -68,7 +69,7 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
   return <div className="transcript" ref={container} data-window-first-id={renderedItems[0]?.id} data-window-last-id={renderedItems.at(-1)?.id}>{hidden > 0 && <button className="history-load" type="button" onClick={() => setVisible(value => value + 60)}><ChevronUp size={16} />显示更早的消息 · 还有 {hidden} 条</button>}
     {items.length ? rows.map(row => {
       const first = Array.isArray(row) ? row[0] : row; const last = Array.isArray(row) ? row.at(-1)! : row; const run = runEnds.get(last.id)
-      return <Fragment key={first.id}>{first.id === items[tailStart]?.id && gap}{Array.isArray(row) ? <ActivityGroup items={row} expanded={isOpen(first.id)} onToggle={() => toggle(first.id)} /> : <TranscriptItem item={row} expanded={['reasoning', 'plan'].includes(row.type) && isOpen(row.id)} onExpandedToggle={['reasoning', 'plan'].includes(row.type) ? () => toggle(row.id) : undefined} onEdit={row.type === 'userMessage' && row.status !== 'sending' ? onEdit : undefined} editDisabled={editDisabled} />}{run && <RunSummary run={run} latest={(windowEnd === null || liveStart !== null) && run.id === thread?.runs?.at(-1)?.id} />}</Fragment>
+      return <Fragment key={first.id}>{first.id === items[tailStart]?.id && gap}{Array.isArray(row) ? <ActivityGroup items={row} expanded={isOpen(first.id, row)} onToggle={() => toggle(first.id, row)} /> : <TranscriptItem item={row} expanded={['reasoning', 'plan'].includes(row.type) && isOpen(row.id)} onExpandedToggle={['reasoning', 'plan'].includes(row.type) ? () => toggle(row.id) : undefined} onEdit={row.type === 'userMessage' && row.status !== 'sending' ? onEdit : undefined} editDisabled={editDisabled} />}{run && <RunSummary run={run} latest={(windowEnd === null || liveStart !== null) && run.id === thread?.runs?.at(-1)?.id} />}</Fragment>
     }) : <div className="thread-empty"><Sparkles size={22} /><p>会话已准备好，写下你想完成的事。</p></div>}
     {tailStart === items.length && gap}{(windowEnd === null || liveStart !== null) && <>{thread?.error && <Notice text={thread.error} />}
     {thread?.status === 'interrupted' && <div className="turn-end">任务已停止 · 可以继续发送消息</div>}

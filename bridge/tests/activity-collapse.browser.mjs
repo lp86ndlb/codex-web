@@ -11,14 +11,35 @@ import { createHttpServer } from '../server/http.ts'
 const output = resolve('test-results'); await mkdir(output, { recursive: true })
 const root = await mkdtemp(resolve(output, 'collapse-')), cwd = resolve(root, 'project'); await mkdir(cwd)
 process.env.TMPDIR = resolve('../.cache/tmp'); await mkdir(process.env.TMPDIR, { recursive: true })
-const id = randomUUID(), store = resolve(root, 'sessions.json')
-await writeFile(store, JSON.stringify({ [id]: { id, name: '工作步骤收起验证', preview: '', cwd, updatedAt: Date.now() / 1000, turns: [{ id: 'first-turn', status: 'completed', items: [
+const id = randomUUID(), groupedId = randomUUID(), runningId = randomUUID(), store = resolve(root, 'sessions.json')
+const histories = { [id]: { id, name: '工作步骤收起验证', preview: '', cwd, updatedAt: Date.now() / 1000, turns: [{ id: 'first-turn', status: 'completed', items: [
   { id: 'first-user', type: 'userMessage', content: [{ type: 'text', text: '首轮检查项目' }] },
   { id: 'first-reason', type: 'reasoning', summary: ['先检查结构，再核对类型。'], content: [] },
   { id: 'first-tool', type: 'commandExecution', command: 'cat README.md', status: 'completed', aggregatedOutput: '原始内容按需查看', exitCode: 0 },
   { id: 'second-tool', type: 'commandExecution', command: 'npm run check', status: 'completed', aggregatedOutput: '检查通过', exitCode: 0 },
   { id: 'first-answer', type: 'agentMessage', phase: 'final_answer', text: '首轮回答已完成。\n\n```js\nconst done = true\n```' },
-] }] } }))
+] }] } }
+const tool = (id, status = 'completed') => ({ id, type: 'commandExecution', command: 'printf fixture', status, aggregatedOutput: 'Synthetic output', exitCode: status === 'completed' ? 0 : null })
+const user = id => ({ id, type: 'userMessage', content: [{ type: 'text', text: id }] })
+// These small invented histories reproduce the real shapes: failed historical
+// runs and multiple delivered human messages inside one native Codex turn.
+histories[groupedId] = { id: groupedId, name: '同轮多次提问验证', cwd, updatedAt: Date.now() / 1000, turns: [
+  { id: 'old-failed', status: 'failed', items: [user('failed-user'), tool('failed-step', 'failed')] },
+  { id: 'old-interrupted', status: 'interrupted', items: [user('interrupted-user'), tool('interrupted-step')] },
+  { id: 'shared-turn', status: 'completed', items: [
+    user('segment-one'), { id: 'segment-one-reason', type: 'reasoning', summary: ['First segment summary'], content: [] }, tool('segment-one-step'),
+    user('segment-two'), tool('segment-two-step'),
+    user('segment-three'), tool('latest-step'),
+    { id: 'latest-answer', type: 'agentMessage', phase: 'final_answer', text: '最新提问的回答。' },
+  ] },
+] }
+histories[runningId] = { id: runningId, name: '插话运行步骤验证', cwd, updatedAt: Date.now() / 1000, turns: [
+  { id: 'running-shared-turn', status: 'inProgress', items: [
+    user('running-first'), tool('mixed-done'), tool('mixed-working', 'inProgress'),
+    user('running-follow-up'), tool('current-step'),
+  ] },
+] }
+await writeFile(store, JSON.stringify(histories))
 const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: store } })
 const bridge = new Bridge(rpc, new Workspace(cwd), resolve(root, 'home'), resolve(root, 'data'))
 await bridge.plugin.setEnabled(false)
@@ -88,7 +109,26 @@ try {
   await until(async () => await groups.last().getAttribute('aria-expanded') === 'false')
   assert.equal(await first.getAttribute('aria-expanded'), 'true', 'A manual history expansion must remain open when new input arrives')
   await rpc.call('test/finish', { threadId: id }); await until(() => !bridge.threads.get(id)?.turnId)
+  await page.getByRole('button', { name: /同轮多次提问验证/ }).first().click()
+  const activity = itemId => page.locator(`.activity-group[data-activity-id="${itemId}"] [data-disclosure-row]`)
+  await activity('latest-step').waitFor()
+  for (const step of ['failed-step', 'interrupted-step', 'segment-one-step', 'segment-two-step']) assert.equal(await activity(step).getAttribute('aria-expanded'), 'false', `Historical segment ${step} stayed open`)
+  assert.equal(await activity('latest-step').getAttribute('aria-expanded'), 'true')
+  assert.equal(await page.locator('details[data-activity-id="segment-one-reason"]').evaluate(node => node.open), false)
+  await page.reload(); await activity('latest-step').waitFor()
+  for (const step of ['failed-step', 'interrupted-step', 'segment-one-step', 'segment-two-step']) assert.equal(await activity(step).getAttribute('aria-expanded'), 'false', `Reload reopened ${step}`)
+  await page.screenshot({ path: resolve(output, 'activity-collapse-same-turn-history.png'), fullPage: true })
+
+  // A history-only read intentionally clears turnId. Activate this native
+  // fixture first so the view represents a genuinely managed running turn.
+  await bridge.open(runningId, true)
+  await page.getByRole('button', { name: /插话运行步骤验证/ }).first().click()
+  await activity('mixed-done').waitFor()
+  assert.equal(await activity('mixed-done').getAttribute('aria-expanded'), 'true', 'A running member after a completed first row must keep the whole step group visible')
+  assert.equal(await activity('current-step').getAttribute('aria-expanded'), 'true')
+  assert.equal(await page.locator('.activity-group details[open]').count(), 0)
+  await page.screenshot({ path: resolve(output, 'activity-collapse-steering-running.png'), fullPage: true })
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ defaultNextInput: true, completion: true, never: true, persisted: true, manualHistoryOverride: true, rawCommandsCollapsed: true, finalCodeVisible: true, pageErrors: errors }))
+  console.log(JSON.stringify({ defaultNextInput: true, completion: true, never: true, persisted: true, manualHistoryOverride: true, rawCommandsCollapsed: true, finalCodeVisible: true, sameTurnSegments: true, historicalFailuresFolded: true, mixedRunningGroupVisible: true, pageErrors: errors }))
 } catch (error) { await page.screenshot({ path: resolve(output, 'activity-collapse-failure.png'), fullPage: true }).catch(() => {}); throw error }
 finally { await browser.close(); await app.close(); await rm(root, { recursive: true, force: true }) }
