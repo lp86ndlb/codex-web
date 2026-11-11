@@ -380,7 +380,7 @@ export class Bridge extends EventEmitter {
         efforts: array(model.supportedReasoningEfforts).map(value => string(record(value).reasoningEffort)) }
     }) : []
     const account = accountResult.status === 'fulfilled' ? record(record(accountResult.value).account) : {}
-    return { capabilities: { fileReferences: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
+    return { capabilities: { fileReferences: true, filePreview: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
       account: string(account.type) || '未检测到登录；自定义供应商可使用环境变量', threads: this.list() }
   }
 

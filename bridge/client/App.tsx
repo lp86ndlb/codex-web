@@ -17,6 +17,7 @@ import { GenuiProvider, GenuiPanel } from './GenuiHost.tsx'
 import { Transcript, type MessageJump } from './Transcript.tsx'
 import { mergeView, applyThreadPatch } from './thread-state.ts'
 import { ChoiceDock, ChoiceProvider, type ChoiceAnswer } from './ChoiceHost.tsx'
+import { FilePreviewProvider } from './FilePreview.tsx'
 import { pendingChoiceMessage } from '../shared/choices.ts'
 import { useConversationScroll } from './useConversationScroll.ts'
 import { UsagePopover } from './UsagePopover.tsx'
@@ -635,7 +636,7 @@ export function App() {
   function openSidebarNavigation() { setSidebarCollapsed(false); setSidebar(mobile); try { localStorage.setItem('cweb:sidebar-collapsed', 'false') } catch {} }
   function jumpToNotice(id: string) { setSearch(''); chooseThread(id); openSidebarNavigation(); setRevealThread({ id, seq: ++revealSequence.current }) }
   const toggleSidebar = () => { setSidebar(false); setSidebarCollapsed(value => { try { localStorage.setItem('cweb:sidebar-collapsed', String(!value)) } catch {} return !value }) }
-  return <ChoiceProvider threadId={selected || ''} activeMessageId={activeChoiceMessage} message={thread?.items.find(item => item.id === activeChoiceMessage)} onAnswer={choiceAnswer}><GenuiProvider threadId={selected || ""} enabled={prefs.genui} streaming={running} onAction={genuiAction} onOpen={openGenui}><div style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties} className={`app ${sidebarResizing ? 'sidebar-resizing' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${(inspector && activeWorkspace) || genuiOpen ? '' : 'inspector-hidden'}`}>
+  return <FilePreviewProvider workspaceId={activeWorkspace?.id} root={activeWorkspace?.path} cwd={activeCwd}><ChoiceProvider threadId={selected || ''} activeMessageId={activeChoiceMessage} message={thread?.items.find(item => item.id === activeChoiceMessage)} onAnswer={choiceAnswer}><GenuiProvider threadId={selected || ""} enabled={prefs.genui} streaming={running} onAction={genuiAction} onOpen={openGenui}><div style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties} className={`app ${sidebarResizing ? 'sidebar-resizing' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${(inspector && activeWorkspace) || genuiOpen ? '' : 'inspector-hidden'}`}>
     <Presence show={sidebar} className="sidebar-backdrop" role="button" tabIndex={0} aria-label="关闭会话列表" onClick={() => setSidebar(false)} onKeyDown={event => { if (['Enter', ' '].includes(event.key)) setSidebar(false) }}>{null}</Presence>
     <aside className={`sidebar ${sidebar ? 'shown' : ''}`} aria-label="会话列表" aria-hidden={mobile ? !sidebar : sidebarCollapsed} {...((mobile ? !sidebar : sidebarCollapsed) ? { inert: '' } : {})}><div className="sidebar-content">
       <div className="brand"><BrandMark size={42} /><div><strong>cweb</strong><span>Codex 工作台</span></div></div>
@@ -698,5 +699,5 @@ export function App() {
     {palette && <CommandPalette title={palette === 'commands' ? '搜索命令…' : palette === 'skills' ? '选择本轮 Skill…' : '搜索输入历史…'}
       items={palette === 'commands' ? commands : palette === 'skills' ? availableSkills.map(skill => ({ id: skill.path, label: skill.name, detail: skill.description })) : history.map((text, index) => ({ id: String(index), label: text }))}
       onClose={() => { setPalette(null); requestAnimationFrame(() => composer.current?.focus()) }} onChoose={id => { if (palette === 'commands') runCommand(id); else if (palette === 'skills') { const skill = availableSkills.find(row => row.path === id); if (skill) useSkill(skill) } else { setDraft(history[Number(id)]); setPalette(null); requestAnimationFrame(() => composer.current?.focus()) } }} />}
-  </div></GenuiProvider></ChoiceProvider>
+  </div></GenuiProvider></ChoiceProvider></FilePreviewProvider>
 }

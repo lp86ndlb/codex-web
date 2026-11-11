@@ -1,5 +1,5 @@
-import { realpath, readdir, readFile, stat } from 'node:fs/promises'
-import { relative, resolve, isAbsolute, sep } from 'node:path'
+import { realpath, readdir, readFile, stat, lstat } from 'node:fs/promises'
+import { relative, resolve, isAbsolute, sep, extname } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { BridgeError } from './errors.ts'
@@ -7,6 +7,21 @@ import type { Change, FileEntry } from '../shared/types.ts'
 
 const exec = promisify(execFile)
 const hidden = new Set(['node_modules', 'dist', 'target', 'vendor', 'upstream'])
+const privatePreviewPaths = new Set(['.data', '.git', '.codex', '.ssh', '.aws', '.azure', '.config', '.docker', '.gnupg', '.kube', '.pki', 'node_modules'])
+const privatePreviewNames = new Set(['.npmrc', '.netrc', '.pypirc', '.git-credentials', '.bash_history', '.zsh_history'])
+const previewLanguages: Record<string, string> = {
+  '.md': 'markdown', '.mdx': 'markdown', '.json': 'json', '.jsonc': 'json', '.ts': 'typescript', '.tsx': 'tsx',
+  '.js': 'javascript', '.jsx': 'jsx', '.mjs': 'javascript', '.cjs': 'javascript', '.py': 'python', '.sh': 'bash',
+  '.bash': 'bash', '.css': 'css', '.html': 'html', '.svg': 'xml', '.xml': 'xml', '.yaml': 'yaml', '.yml': 'yaml',
+  '.toml': 'toml', '.rs': 'rust', '.go': 'go', '.sql': 'sql', '.txt': 'text', '.log': 'text',
+}
+
+function privatePreviewSegment(segment: string): boolean {
+  const name = segment.toLowerCase()
+  return privatePreviewPaths.has(name) || privatePreviewNames.has(name) || /^\.env(?:[.-]|$)/i.test(name)
+    || /^\.?((credentials?|secrets?|tokens?|passwords?|auth)(\.(json|ya?ml|toml|ini|cfg|conf|txt|xml))?|id_(rsa|dsa|ecdsa|ed25519)(\..*)?)$/i.test(name)
+    || /\.(pem|key|p12|pfx|kdbx)$/i.test(name)
+}
 
 export class Workspace {
   private static referenceIndexes = new Map<string, { at: number; files: FileEntry[] }>()
@@ -70,10 +85,38 @@ export class Workspace {
 
   async file(path: string): Promise<string> {
     const file = await this.safeFile(path)
+    return this.readTextFile(file)
+  }
+
+  /** Explicit document links may open safe dotfiles without exposing them in the browser/index. */
+  async preview(path: string): Promise<{ path: string; kind: 'file' | 'directory'; text?: string; language?: string }> {
+    const requested = resolve(this.root, path)
+    if (!this.contains(requested)) throw new BridgeError('OUTSIDE_WORKSPACE', '不能读取工作区之外的文件', 403)
+    const segments = relative(this.root, requested).split(sep).filter(Boolean)
+    if (segments.some(privatePreviewSegment)) throw new BridgeError('PRIVATE_FILE', '不能预览凭据、私钥或应用运行数据', 403)
+    // Reject links at every level, including an in-workspace alias to a sensitive directory.
+    let current = this.root
+    for (const segment of segments) {
+      current = resolve(current, segment)
+      const info = await lstat(current).catch(() => { throw new BridgeError('FILE_MISSING', '文件不存在', 404) })
+      if (info.isSymbolicLink()) throw new BridgeError('SYMLINK_FILE', '请使用工作区内文件的真实路径，暂不预览符号链接', 403)
+    }
+    const canonical = await realpath(requested).catch(() => { throw new BridgeError('FILE_MISSING', '文件不存在', 404) })
+    if (!this.contains(canonical)) throw new BridgeError('OUTSIDE_WORKSPACE', '不能读取工作区之外的文件', 403)
+    const canonicalPath = relative(this.root, canonical) || '.'
+    if (canonicalPath.split(sep).some(privatePreviewSegment)) throw new BridgeError('PRIVATE_FILE', '不能预览凭据、私钥或应用运行数据', 403)
+    if ((await stat(canonical)).isDirectory()) return { path: canonicalPath, kind: 'directory' }
+    const text = await this.readTextFile(canonical)
+    if (/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/.test(text)) throw new BridgeError('PRIVATE_FILE', '不能预览私钥内容', 403)
+    return { path: canonicalPath, kind: 'file', text, language: previewLanguages[extname(canonical).toLowerCase()] || 'text' }
+  }
+
+  private async readTextFile(file: string): Promise<string> {
     const info = await stat(file)
     if (!info.isFile()) throw new BridgeError('NOT_FILE', '请选择普通文件')
     if (info.size > 512 * 1024) throw new BridgeError('FILE_LARGE', '文件超过 512 KB，请在编辑器中查看')
     const contents = await readFile(file)
+    if (contents.length > 512 * 1024) throw new BridgeError('FILE_LARGE', '文件超过 512 KB，请在编辑器中查看')
     if (contents.includes(0)) throw new BridgeError('BINARY_FILE', '暂不预览二进制文件')
     return contents.toString('utf8')
   }

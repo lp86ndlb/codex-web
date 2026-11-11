@@ -1,0 +1,30 @@
+name: 问题反馈
+description: 报告可复现的界面、部署或 CLI 桥接问题
+body:
+  - type: markdown
+    attributes:
+      value: 请使用演示数据复现；不要上传密钥、个人会话、附件或未脱敏日志。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: Ubuntu/Linux、Node.js、Codex CLI、浏览器版本及 cweb 提交版本。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动或打开页面开始，列出能复现问题的操作。
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: 已脱敏的日志或截图（可选）

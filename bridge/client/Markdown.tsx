@@ -9,6 +9,7 @@ import { cjkFriendlyStrong } from './dsh/markdown/cjkFriendlyStrong.ts'
 import { GenuiFence, GenuiMessage } from './GenuiHost.tsx'
 import { CodeBlock } from '../plugins/genui/client/cweb-primitives.tsx'
 import { ChoiceFence } from './ChoiceHost.tsx'
+import { ChatLink, chatUrlTransform } from './FileLinks.tsx'
 const MathRenderer = lazy(() => import('./MathText.tsx'))
 
 /** The DSH grammar preserves code and adds Chinese emphasis + TeX delimiters. */
@@ -35,11 +36,20 @@ function MarkdownPre({ children }: { children?: ReactNode }) {
   if (/math-display|language-(?:math|latex|tex)\b/.test(className)) return <div className="math-block"><MathText source={source} display /></div>
   return <CodeBlock code={source} language={className.replace(/^language-/, '')} collapsed={collapsed} />
 }
-export const Markdown = memo(function Markdown({ text, streaming = false, genui = true, collapseCode = true }: { text: string; streaming?: boolean; genui?: boolean; collapseCode?: boolean }) {
-  return <GenuiAllowed.Provider value={genui}><CollapseCode.Provider value={collapseCode}><div className="markdown"><ReactMarkdown skipHtml remarkPlugins={streaming ? [remarkGfm, cjk] : [remarkGfm, cjk, dshMath]} components={{
+function plainText(node: ReactNode): string { return Array.isArray(node) ? node.map(plainText).join('') : isValidElement<{ children?: ReactNode }>(node) ? plainText(node.props.children) : typeof node === 'string' || typeof node === 'number' ? String(node) : '' }
+export const Markdown = memo(function Markdown({ text, streaming = false, genui = true, collapseCode = true, headingIds = false }: { text: string; streaming?: boolean; genui?: boolean; collapseCode?: boolean; headingIds?: boolean }) {
+  const headings = new Map<string, number>()
+  const heading = (tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6') => ({ children }: { children?: ReactNode }) => {
+    const base = plainText(children).toLowerCase().replace(/[^\p{L}\p{N}\p{M}_\s-]/gu, '').replace(/\s/g, '-')
+    const count = headings.get(base) || 0; headings.set(base, count + 1)
+    const Tag = tag
+    return <Tag id={count ? `${base}-${count}` : base}>{children}</Tag>
+  }
+  return <GenuiAllowed.Provider value={genui}><CollapseCode.Provider value={collapseCode}><div className="markdown"><ReactMarkdown skipHtml urlTransform={chatUrlTransform} remarkPlugins={streaming ? [remarkGfm, cjk] : [remarkGfm, cjk, dshMath]} components={{
+    ...(headingIds ? { h1: heading('h1'), h2: heading('h2'), h3: heading('h3'), h4: heading('h4'), h5: heading('h5'), h6: heading('h6') } : {}),
     pre: MarkdownPre,
     code: ({ className, children }) => /math-inline/.test(className || '') ? <MathText source={String(children || '')} display={false} /> : <code className={className}>{children}</code>,
-    a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
+    a: ChatLink,
     img: ({ alt, src }) => src && (/^https?:\/\//.test(src) || /^\/api\/attachments\/[0-9a-f-]+\/content$/.test(src)) ? <img src={src} alt={alt || ''} loading="lazy" /> : <span className="muted">[图片：{alt || '未加载'}]</span>,
   }}>{text || ' '}</ReactMarkdown></div></CollapseCode.Provider></GenuiAllowed.Provider>
 })

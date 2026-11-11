@@ -255,12 +255,13 @@ export function createHttpServer({ bridge, dist, devMiddleware, control }: HttpO
     }
     if (req.method === 'GET') {
       const target = url.searchParams.get('path') || '.'
-      if (['/api/files', '/api/file', '/api/references', '/api/changes', '/api/diff', '/api/directory'].includes(path)) {
+      if (['/api/files', '/api/file', '/api/preview', '/api/references', '/api/changes', '/api/diff', '/api/directory'].includes(path)) {
         const id = url.searchParams.get('workspace') || (bridge.catalog.list().length === 1 ? bridge.catalog.list()[0].id : '')
         const workspace = bridge.catalog.get(id)
         if (path === '/api/files') { json(res, await workspace.files(target)); return }
         if (path === '/api/references') { json(res, await workspace.references(url.searchParams.get('q') || '')); return }
         if (path === '/api/file') { json(res, { text: await workspace.file(target) }); return }
+        if (path === '/api/preview') { json(res, await workspace.preview(target)); return }
         if (path === '/api/changes') { json(res, await workspace.changes(target)); return }
         if (path === '/api/diff') { json(res, { text: await workspace.diff(url.searchParams.get('cwd') || '.', target) }); return }
         if (path === '/api/directory') { json(res, { path: await workspace.directory(target) }); return }

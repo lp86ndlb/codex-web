@@ -111,7 +111,7 @@ export interface RuntimeStatus {
 }
 
 export interface Bootstrap {
-  capabilities?: { fileReferences: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean }
+  capabilities?: { fileReferences: boolean; filePreview?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean }
   token: string
   root: string
   workspaces: WorkspaceInfo[]
