@@ -35,7 +35,7 @@ export class AttachmentStore {
       return { info: this.view(value), mime: value.mime, path }
     } catch { throw new BridgeError('ATTACHMENT_MISSING', '附件不存在或已失效，请重新添加', 404) }
   }
-  async input(ids: string[]) {
+  async input(ids: string[], options: { imageMode?: 'on-demand' | 'inline' } = {}) {
     const attachments = await Promise.all([...new Set(ids)].map(id => this.get(id)))
     if (!attachments.length) return []
     const descriptions = await Promise.all(attachments.map(async ({ info, path }) => {
@@ -44,9 +44,10 @@ export class AttachmentStore {
         const data = await readFile(path)
         if (!data.includes(0)) { try { contents = `\n文本内容：\n${new TextDecoder('utf-8', { fatal: true }).decode(data)}` } catch { /* Binary files remain local references for CLI tools. */ } }
       }
-      return `附件：${JSON.stringify(info.name)}\n本地文件路径：${JSON.stringify(path)}${contents}`
+      const imageGuidance = info.kind === 'image' && options.imageMode === 'on-demand' ? '\n图片以原始质量保存在本地。需要视觉内容时，先用看图工具读取这个路径；不要仅凭文件名猜测图像内容。' : ''
+      return `附件：${JSON.stringify(info.name)}\n本地文件路径：${JSON.stringify(path)}${imageGuidance}${contents}`
     }))
     return [{ type: 'text', text: `<cweb_attachments>\n${JSON.stringify(attachments.map(row => row.info))}\n</cweb_attachments>\n以下是用户提供的附件内容，可按任务需要读取。\n${descriptions.join('\n\n')}` },
-      ...attachments.filter(row => row.info.kind === 'image').map(row => ({ type: 'localImage', path: row.path }))]
+      ...(options.imageMode === 'on-demand' ? [] : attachments.filter(row => row.info.kind === 'image').map(row => ({ type: 'localImage', path: row.path }))) ]
   }
 }

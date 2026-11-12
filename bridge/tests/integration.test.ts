@@ -245,7 +245,12 @@ test('todo plugin bridges CLI tools, isolates sessions, waits for human completi
     assert.equal(await f.bridge.plugin.context(thread.id), '')
     const log = (await readFile(resolve(f.root, 'rpc.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
     assert.equal(log.find(row => row.method === 'thread/start').params.dynamicTools.filter((tool: { name: string }) => tool.name.startsWith('todo_note_')).length, 3)
-    assert.equal(log.filter(row => row.method === 'thread/inject_items').length, 2)
+    const injected = log.filter(row => row.method === 'thread/inject_items').map(row => row.params.items.map((item: { content: { text?: string }[] }) => item.content.map(part => part.text || '').join('\n')).join('\n'))
+    assert.equal(injected.filter(text => text.includes('Keep the user informed')).length, 1, 'A note update must not replay the complete static guide')
+    const snapshots = injected.filter(text => !text.includes('Keep the user informed'))
+    assert.equal(snapshots.length, 2, 'Both the initial and updated live note must reach the model')
+    assert.notEqual(snapshots[0], snapshots[1])
+    assert.match(snapshots[1], /验证插件/)
     assert.equal(log.filter(row => row.id === 9003 && row.result?.success === true).length, 2)
   } finally { await f.close() }
 })

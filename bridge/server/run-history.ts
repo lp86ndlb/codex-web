@@ -4,8 +4,8 @@ import type { RunMetrics, ThreadView } from '../shared/types.ts'
 import { JsonStore } from './storage.ts'
 import { record, string } from './errors.ts'
 
-const runSchema = z.object({ id: z.string(), status: z.string(), startedAt: z.number().optional(), completedAt: z.number().optional(), durationMs: z.number().optional(), tokenBase: z.number().optional(), tokens: z.number().optional(), observed: z.boolean().optional(), quota: z.object({ capturedAt: z.number(), windows: z.array(z.object({ name: z.string(), change: z.number() })) }).optional() })
-const schema = z.object({ runs: z.array(runSchema), times: z.record(z.object({ timestamp: z.number(), timeSource: z.enum(['native', 'turn', 'observed']) })), totalTokens: z.number(), tokenUsageKnown: z.boolean(), lastTurnId: z.string() })
+const runSchema = z.object({ id: z.string(), status: z.string(), startedAt: z.number().optional(), completedAt: z.number().optional(), durationMs: z.number().optional(), tokenBase: z.number().optional(), tokens: z.number().optional(), observed: z.boolean().optional(), recoveryOf: z.string().optional(), quota: z.object({ capturedAt: z.number(), windows: z.array(z.object({ name: z.string(), change: z.number() })) }).optional() })
+const schema = z.object({ runs: z.array(runSchema), times: z.record(z.object({ timestamp: z.number(), timeSource: z.enum(['native', 'turn', 'observed']) })), totalTokens: z.number(), tokenUsageKnown: z.boolean(), lastTurnId: z.string(), contextUsage: z.object({ inputTokens: z.number().nonnegative(), windowTokens: z.number().positive(), updatedAt: z.number() }).optional() })
 
 /** Only observed metadata is stored here. Codex remains the history authority. */
 export class RunHistory {
@@ -26,12 +26,13 @@ export class RunHistory {
       return known && (!item.timestamp || item.timeSource === 'turn') ? { ...item, ...known } : item
     })
     if (!thread.turnId && thread.runs?.at(-1)?.id === saved.lastTurnId && saved.tokenUsageKnown) { thread.tokens = saved.totalTokens; thread.tokenUsageKnown = true }
+    thread.contextUsage ||= saved.contextUsage
     return thread
   }
   async save(thread: ThreadView) {
     const runs = structuredClone((thread.runs || []).slice(-1000)); const times: z.infer<typeof schema>['times'] = {}
     for (const item of thread.items.slice(-20_000)) if (item.timestamp && item.timeSource && ['userMessage', 'agentMessage'].includes(item.type)) times[item.id] = { timestamp: item.timestamp, timeSource: item.timeSource }
-    await this.store(thread.id).update(data => { data.runs = runs; data.times = times; data.totalTokens = thread.tokens; data.tokenUsageKnown = Boolean(thread.tokenUsageKnown); data.lastTurnId = runs.at(-1)?.id || '' })
+    await this.store(thread.id).update(data => { data.runs = runs; data.times = times; data.totalTokens = thread.tokens; data.tokenUsageKnown = Boolean(thread.tokenUsageKnown); data.lastTurnId = runs.at(-1)?.id || ''; data.contextUsage = thread.contextUsage || undefined })
   }
   async flush() { await Promise.all([...this.stores.values()].map(store => store.read())) }
 }

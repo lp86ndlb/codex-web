@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from 'react'
-import { Clock3 } from 'lucide-react'
+import { Check, CircleAlert, Clock3, Gauge, RefreshCw } from 'lucide-react'
 import type { RunMetrics, ThreadView } from '../shared/types.ts'
 import { activityTitle } from './components.tsx'
 
@@ -70,4 +70,19 @@ export const RunStatus = memo(function RunStatus({ thread, approvals }: { thread
   const label = approvals ? '等待你的确认' : thread.choicePending ? '有问题待回复' : stage === 'compacting' ? '正在压缩上下文' : stage === 'retrying' ? '模型请求重试中' : activity ? activityTitle(activity) : '正在处理'
   const detail = approvals || thread.choicePending ? '' : waiting ? '较长时间未收到新进展，等待状态更新' : stage === 'compacting' ? '正在整理历史记录，完成后继续处理' : stage === 'retrying' ? `等待 CLI 恢复模型响应${attempt ? ` · 第 ${attempt} 次重试` : ''}` : ''
   return <div className="working composer-run-status" data-stage={stage} data-waiting={waiting || undefined} role="group" aria-label="本轮运行状态"><span className="working-dots" aria-hidden="true"><i /><i /><i /></span><span className="working-label" title={thread.progress?.message || label}>{label}</span><RunTimer key={thread.turnId} run={run} fallbackStartedAt={fallback} />{detail && <span className="run-progress-detail" title={thread.progress?.message || detail}>{detail}</span>}</div>
+})
+
+/** Recovery remains separate from the running indicator: a failed source turn
+ * can be waiting for a retry without pretending that model output is active. */
+export const SessionFeedback = memo(function SessionFeedback({ thread }: { thread?: ThreadView }) {
+  const recovery = thread?.recovery
+  const usage = thread?.contextUsage
+  const ratio = usage && Number.isFinite(usage.inputTokens) && Number.isFinite(usage.windowTokens) && usage.inputTokens >= 0 && usage.windowTokens > 0 ? usage.inputTokens / usage.windowTokens : 0
+  const showUsage = ratio >= .7
+  if (!recovery && !showUsage) return null
+  const titles = { scheduled: '准备自动重试', retrying: '正在自动重试', manual: '需要手动继续', recovered: '响应已恢复' }
+  return <div className="session-feedback">
+    {recovery && <div className="session-feedback-row recovery-status" data-recovery={recovery.state} role="status" aria-label="自动恢复状态">{recovery.state === 'recovered' ? <Check size={14} /> : recovery.state === 'manual' ? <CircleAlert size={14} /> : <RefreshCw size={14} />}<span className="session-feedback-copy"><strong>{titles[recovery.state]}</strong>{recovery.maxAttempts > 0 && <small className="recovery-count">{recovery.attempt}/{recovery.maxAttempts}</small>}{recovery.message && <span className="session-feedback-message" title={recovery.message}>{recovery.message}</span>}</span></div>}
+    {showUsage && usage && <div className="session-feedback-row context-usage-hint" role="note" aria-label="上下文使用提示" title={`CLI 最近报告的输入 ${Math.round(usage.inputTokens).toLocaleString()} tokens / 上下文窗口 ${Math.round(usage.windowTokens).toLocaleString()} tokens`}><Gauge size={14} /><span className="session-feedback-copy"><strong>最近已知输入约占上下文 {Math.round(ratio * 100)}%</strong><span className="session-feedback-message">这是 CLI 最近报告的输入用量，并非当前请求尺寸。可用 /compact 压缩，或整理摘要后在新话题接续。</span></span></div>}
+  </div>
 })

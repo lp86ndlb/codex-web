@@ -125,13 +125,14 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
     const lastItems = new Map<string, string>(); for (const item of items) if (item.turnId) lastItems.set(item.turnId, item.id)
     return new Map((thread?.runs || []).filter(run => run.status !== 'inProgress').map(run => [lastItems.get(run.id), run]))
   }, [items, thread?.runs])
+  const recoveryTurns = useMemo(() => new Set((thread?.runs || []).filter(run => run.recoveryOf).map(run => run.id)), [thread?.runs])
   if (loading && !thread) return <div className="transcript"><div className="conversation-skeleton" aria-label="正在加载会话"><i /><i /><i /><i /></div></div>
   const hidden = rows[start]?.first || 0
   const gap = end < tailStart ? <button className="history-load history-load-newer" type="button" onClick={newer}><ChevronDown size={16} />{arrival < 0 ? '显示较新的消息' : '显示中间的消息'} · 还有 {(rows[tailStart]?.first ?? items.length) - (rows[end - 1]?.last ?? -1) - 1} 条</button> : null
   return <div className="transcript" ref={container} data-window-first-id={rendered[0]?.items[0].id} data-window-last-id={rendered.at(-1)?.items.at(-1)?.id} data-window-rows={rendered.length}>{hidden > 0 && <button className="history-load history-load-older" type="button" onClick={earlier}><ChevronUp size={16} />显示更早的消息 · 还有 {hidden} 条</button>}
     {items.length ? rendered.map(row => {
       const item = row.items[0]; const last = row.items.at(-1)!; const run = runEnds.get(last.id)
-      return <Fragment key={row.id}>{row.id === rows[tailStart]?.id && gap}{row.process ? <ActivityGroup items={row.items} expanded={isOpen(row)} onToggle={() => toggle(row)} /> : <TranscriptItem item={item} onEdit={item.type === 'userMessage' && item.status !== 'sending' ? onEdit : undefined} editDisabled={editDisabled} />}{run && <RunSummary run={run} latest={(!page || arrival >= 0) && run.id === thread?.runs?.at(-1)?.id} />}</Fragment>
+      return <Fragment key={row.id}>{row.id === rows[tailStart]?.id && gap}{row.process ? <ActivityGroup items={row.items} expanded={isOpen(row)} onToggle={() => toggle(row)} /> : <TranscriptItem item={item} autoRecovery={Boolean(item.turnId && recoveryTurns.has(item.turnId))} onEdit={item.type === 'userMessage' && item.status !== 'sending' ? onEdit : undefined} editDisabled={editDisabled} />}{run && <RunSummary run={run} latest={(!page || arrival >= 0) && run.id === thread?.runs?.at(-1)?.id} />}</Fragment>
     }) : <div className="thread-empty"><Sparkles size={22} /><p>会话已准备好，写下你想完成的事。</p></div>}
     {tailStart === rows.length && gap}{(!page || arrival >= 0) && <>{thread?.error && <Notice text={thread.error} />}
     {thread?.status === 'interrupted' && <div className="turn-end">任务已停止 · 可以继续发送消息</div>}

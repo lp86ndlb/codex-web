@@ -92,7 +92,7 @@ test('preferences persist, existing sessions retain options, and per-web skill d
   } finally { await f.close() }
 })
 
-test('attachments are authenticated, persisted, passed as native images or text, and projected back into history', async () => {
+test('attachments preserve originals and default to on-demand image reading, with explicit native inline mode', async () => {
   const f = await fixture()
   try {
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jE9sAAAAASUVORK5CYII=', 'base64')
@@ -111,8 +111,15 @@ test('attachments are authenticated, persisted, passed as native images or text,
     const projected = f.bridge.threads.get(thread.id)!.items.find(row => row.type === 'userMessage')!
     assert.equal(projected.text, ''); assert.deepEqual(projected.attachments?.map(row => row.name), ['diagram.png', 'attachment.json'])
     const turn = (await f.log()).findLast(row => row.method === 'turn/start')
-    assert.ok(turn.params.input.some((row: { type: string }) => row.type === 'localImage'))
+    assert.equal(turn.params.input.some((row: { type: string }) => row.type === 'localImage'), false, 'Default input must not permanently embed images in user history')
+    assert.match(turn.params.input.find((row: { text?: string }) => row.text?.includes('<cweb_attachments>')).text, /先用看图工具读取/)
     assert.match(turn.params.input.find((row: { text?: string }) => row.text?.includes('<cweb_attachments>')).text, /A file provided by the user/)
+    await f.bridge.updatePreferences({ imageInputMode: 'inline' })
+    await f.bridge.message(thread.id, { text: 'inline image', mode: 'read-only', attachments: [image.id] })
+    await until(() => f.bridge.threads.get(thread.id)?.status === 'completed')
+    const inline = (await f.log()).findLast(row => row.method === 'turn/start')
+    assert.ok(inline.params.input.some((row: { type: string }) => row.type === 'localImage'))
+    assert.deepEqual(Buffer.from(await (await fetch(f.base + image.url, { headers: f.headers })).arrayBuffer()), png, 'Input mode must not resize or recompress the original')
     await assert.rejects(f.bridge.attachments.get('../../private'), /无效/)
     const revisionBeforeArchive = f.bridge.threads.get(thread.id)!.revision
     await f.bridge.archive(thread.id)

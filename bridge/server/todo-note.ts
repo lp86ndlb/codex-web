@@ -74,15 +74,21 @@ export class TodoNotePlugin {
     })
   }
   async context(id: string, mcpServer?: string) {
-    if (!this.enabled) return ''
+    const { instructions, snapshot } = await this.contextParts(id, mcpServer)
+    return [instructions, snapshot].filter(Boolean).join('\n')
+  }
+  /** Separate durable tool guidance from the changing note snapshot, so a
+   * focus update does not replay the complete instructions into native history. */
+  async contextParts(id: string, mcpServer?: string) {
+    if (!this.enabled) return { instructions: '', snapshot: '' }
     const note = await this.get(id)
     const native = await this.supportsTools(id)
-    if (!native && !mcpServer) return `本会话的待办便签快照（待办工具尚未接入，用户可在便签中手动维护；不要尝试调用缺失的工具）：\n${renderLiveSection(note, { nudge: false })}`
+    if (!native && !mcpServer) return { instructions: '本会话的待办便签快照（待办工具尚未接入，用户可在便签中手动维护；不要尝试调用缺失的工具）：', snapshot: renderLiveSection(note, { nudge: false }) }
     const guide = native ? GUIDE : `The following tools are available only when listed in the current cweb session. If this conversation is resumed elsewhere and they are absent, do not attempt to call them. Earlier references to todo_note_* mean the matching MCP tools below.\n\n${GUIDE.replace(/\btodo_note_(read|update|complete)\b/g, `mcp__${mcpServer}__todo_note_$1`)}`
     const rejected = note.tasks.filter((task: { state: string; rejects: number }) => task.state === 'active' && task.rejects > 0)
     const awaiting = note.tasks.filter((task: { state: string }) => task.state === 'awaiting')
     const review = rejected.length || awaiting.length ? `\nQuality review reminder: ${rejected.length} rejected task(s), ${awaiting.length} awaiting user acceptance. Unaccepted work is not user-approved. Prioritize concrete feedback, review and improve; never self-confirm.\n${rejected.slice(0, 5).map((task: { title: string; note: string }) => `- Needs improvement: ${task.title}${task.note ? ` · ${task.note}` : ''}`).join('\n')}` : ''
-    return `${guide}\n${renderLiveSection(note)}${review}`
+    return { instructions: guide, snapshot: `${renderLiveSection(note)}${review}` }
   }
   async call(id: string, name: string, raw: unknown): Promise<string> {
     if (!this.enabled) throw new BridgeError('PLUGIN_DISABLED', '待办便签已停用')

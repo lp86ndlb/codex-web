@@ -164,11 +164,16 @@ export function applyNotification(thread: ThreadView, method: string, params: Re
       const row = record(value); return { step: string(row.step), status: string(row.status) }
     })
   } else if (method === 'thread/tokenUsage/updated') {
-    const total = record(record(params.tokenUsage).total)
+    const usage = record(params.tokenUsage)
+    const total = record(usage.total)
     result.tokens = typeof total.totalTokens === 'number' ? total.totalTokens : thread.tokens
     result.tokenUsageKnown = typeof total.totalTokens === 'number' || thread.tokenUsageKnown
     const turnId = string(params.turnId)
     result.runs = thread.runs?.map(run => run.id === turnId && run.tokenBase !== undefined ? { ...run, tokens: Math.max(0, result.tokens - run.tokenBase) } : run)
+    const inputTokens = record(usage.last).inputTokens, windowTokens = usage.modelContextWindow
+    if ((!turnId || turnId === (thread.turnId || thread.runs?.at(-1)?.id)) && typeof inputTokens === 'number' && Number.isFinite(inputTokens) && inputTokens >= 0 && typeof windowTokens === 'number' && Number.isFinite(windowTokens) && windowTokens > 0) {
+      result.contextUsage = { inputTokens, windowTokens, updatedAt: now }
+    }
   } else if (method === 'item/started' || method === 'item/completed') {
     const item = projectItem(params.item)
     if (item.type === 'agentMessage') item.status = method === 'item/started' ? 'inProgress' : 'completed'

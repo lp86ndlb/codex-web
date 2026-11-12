@@ -74,3 +74,18 @@ test('the deprecated compaction-complete event also restores normal progress', (
   thread = applyNotification(thread, 'thread/compacted', { turnId: 'run' })
   assert.equal(thread.progress?.stage, 'working'); assert.equal(thread.items.at(-1)?.status, 'completed')
 })
+
+test('context guidance uses recent native input tokens, rejects unknown limits and ignores old turns', () => {
+  let thread = applyNotification(projectThread({ id: 't', turns: [] }), 'turn/started', { turn: { id: 'current', status: 'inProgress' } })
+  thread = applyNotification(thread, 'thread/tokenUsage/updated', { turnId: 'current', tokenUsage: { total: { totalTokens: 400_000_000 }, last: { inputTokens: 350_000 }, modelContextWindow: 475_000 } })
+  assert.equal(thread.contextUsage?.inputTokens, 350_000)
+  assert.equal(thread.contextUsage?.windowTokens, 475_000)
+  assert.notEqual(thread.contextUsage?.inputTokens, thread.tokens, 'Lifetime usage is not the current context size')
+  const usage = thread.contextUsage
+  for (const invalid of [null, 0, -1, Infinity, NaN]) {
+    thread = applyNotification(thread, 'thread/tokenUsage/updated', { turnId: 'current', tokenUsage: { total: {}, last: { inputTokens: 1 }, modelContextWindow: invalid } })
+    assert.deepEqual(thread.contextUsage, usage)
+  }
+  thread = applyNotification(thread, 'thread/tokenUsage/updated', { turnId: 'old', tokenUsage: { total: {}, last: { inputTokens: 1 }, modelContextWindow: 100 } })
+  assert.deepEqual(thread.contextUsage, usage)
+})

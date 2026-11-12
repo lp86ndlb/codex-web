@@ -7,7 +7,8 @@ export const sessionOptionsSchema = z.object({ model: z.string().max(200), effor
 export const preferencesSchema = sessionOptionsSchema.extend({ theme: z.enum(['dark', 'light', 'system']),
   fontSize: z.number().int().min(14).max(22), uiFontSize: z.number().int().min(12).max(18), animations: z.boolean(),
   sendKey: z.enum(['enter', 'mod-enter']), codeWrap: z.boolean(), showInspector: z.boolean(), genui: z.boolean().default(true), showActivityDetails: z.boolean().default(true),
-  activityCollapseTiming: z.enum(['completion', 'next-input', 'never']).default('next-input') }).strict()
+  activityCollapseTiming: z.enum(['completion', 'next-input', 'never']).default('next-input'),
+  autoRecovery: z.boolean().default(true), imageInputMode: z.enum(['on-demand', 'inline']).default('on-demand') }).strict()
 const schema = z.object({ preferences: preferencesSchema, sessions: z.record(sessionOptionsSchema),
   disabledSkills: z.array(z.string()).default([]),
   skillUsage: z.record(z.object({ uses: z.number(), lastUsed: z.number() })) })

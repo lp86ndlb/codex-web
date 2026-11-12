@@ -24,12 +24,13 @@ test('new preferences default to folding work details on next input without writ
 test('legacy preferences gain collapse timing without replacing saved preferences or session options', async () => {
   const legacy = { ...defaultPreferences, theme: 'light', fontSize: 19, showActivityDetails: false }
   Reflect.deleteProperty(legacy, 'activityCollapseTiming')
+  Reflect.deleteProperty(legacy, 'autoRecovery'); Reflect.deleteProperty(legacy, 'imageInputMode')
   const options = { model: 'saved-model', effort: 'high', mode: 'read-only', approvalPolicy: 'on-request' }
   const initial = { preferences: legacy, sessions: { existing: options }, skillUsage: {}, disabledSkills: ['saved-skill'] }
   const f = await fixture(initial)
   try {
     const value = await f.store.snapshot()
-    assert.deepEqual(value.preferences, { ...legacy, activityCollapseTiming: 'next-input' })
+    assert.deepEqual(value.preferences, { ...legacy, activityCollapseTiming: 'next-input', autoRecovery: true, imageInputMode: 'on-demand' })
     assert.deepEqual(value.sessionOptions.existing, options)
     assert.deepEqual(await f.store.disabledSkills(), ['saved-skill'])
     assert.deepEqual(JSON.parse(await readFile(f.file, 'utf8')), initial, 'Reading an old config must not rewrite its contents')

@@ -6,9 +6,11 @@ export interface Preferences extends SessionOptions {
   theme: 'dark' | 'light' | 'system'; fontSize: number; uiFontSize: number
   animations: boolean; sendKey: 'enter' | 'mod-enter'; codeWrap: boolean; showInspector: boolean; genui: boolean; showActivityDetails: boolean
   activityCollapseTiming: ActivityCollapseTiming
+  autoRecovery: boolean
+  imageInputMode: 'on-demand' | 'inline'
 }
 export const defaultPreferences: Preferences = { model: '', effort: '', mode: 'workspace-write', approvalPolicy: 'on-request',
-  theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: false, genui: true, showActivityDetails: true, activityCollapseTiming: 'next-input' }
+  theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: false, genui: true, showActivityDetails: true, activityCollapseTiming: 'next-input', autoRecovery: true, imageInputMode: 'on-demand' }
 export interface UsageWindow { usedPercent: number; windowDurationMins?: number | null; resetsAt?: number | null }
 export interface UsageLimits { limitName?: string | null; primary?: UsageWindow | null; secondary?: UsageWindow | null; credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | null } | null }
 export interface AccountStatus { accountType: string; planType: string; limits: UsageLimits[]; error?: string }
@@ -16,7 +18,7 @@ export interface AttachmentInfo { id: string; name: string; size: number; kind: 
 export interface GenuiPanelInfo { id: string; title: string; spec: unknown; updatedAt: number }
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'
 export interface ThreadGoal { threadId: string; objective: string; status: GoalStatus; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number }
-export interface RunMetrics { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; tokenBase?: number; tokens?: number; quota?: { windows: { name: string; change: number }[]; capturedAt: number }; observed?: boolean }
+export interface RunMetrics { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; tokenBase?: number; tokens?: number; quota?: { windows: { name: string; change: number }[]; capturedAt: number }; observed?: boolean; recoveryOf?: string }
 export interface SkillInfo { name: string; description: string; path: string; scope: string; enabled: boolean; uses: number; lastUsed: number }
 export interface QueuedMessage { id: string; threadId: string; text: string; attachmentCount: number; kind?: 'todo-link'; error?: string }
 export type RunStatus = 'idle' | 'inProgress' | 'completed' | 'interrupted' | 'failed'
@@ -27,6 +29,16 @@ export interface ThreadProgress {
   lastEventAt: number
   attempt?: number
 }
+export interface ThreadRecovery {
+  state: 'scheduled' | 'retrying' | 'manual' | 'recovered'
+  attempt: number
+  maxAttempts: number
+  sourceTurnId: string
+  retryTurnId?: string
+  message: string
+}
+/** Last model-reported input, not an estimate of the next serialized request. */
+export interface ContextUsage { inputTokens: number; windowTokens: number; updatedAt: number }
 
 export interface Item {
   id: string
@@ -86,6 +98,8 @@ export interface ThreadView {
   status: RunStatus
   turnId: string | null
   progress?: ThreadProgress | null
+  recovery?: ThreadRecovery | null
+  contextUsage?: ContextUsage | null
   items: Item[]
   plan: { step: string; status: string }[]
   diff: string
@@ -121,7 +135,7 @@ export interface RuntimeStatus {
 }
 
 export interface Bootstrap {
-  capabilities?: { fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean }
+  capabilities?: { fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean }
   token: string
   root: string
   workspaces: WorkspaceInfo[]

@@ -16,8 +16,11 @@ import { choiceInstructions } from './choice-instructions.ts'
 import { RunHistory, quotaChange, quotaSnapshot, type QuotaSnapshot } from './run-history.ts'
 import { applyNotification, projectThread } from './projection.ts'
 import { array, BridgeError, record, string } from './errors.ts'
+import { recoveryPolicy, hasRecoveryOutput } from './auto-recovery.ts'
+import { SessionContextStore } from './session-context.ts'
 
 interface PendingRequest { wireId: string | number; approval: Approval; params: Record<string, unknown> }
+interface RecoverySource { input?: MessageInput; sourceTurnId: string; retryTurnId?: string; attempt: number; failure: string; blocked?: boolean; starting?: boolean; timer?: ReturnType<typeof setTimeout> }
 export interface MessageInput { text: string; model?: string; effort?: string; mode: Mode; approvalPolicy?: ApprovalPolicy; collaborationMode?: 'default' | 'plan'; steer?: boolean; attachments?: string[]; skills?: string[]; clientMessageId?: string }
 
 /** Native Codex owns history; this instance owns only live UI projections and unresolved prompts. */
@@ -66,6 +69,9 @@ export class Bridge extends EventEmitter {
   private reconciledAt = new Map<string, number>()
   private reconciliationEpoch = 0
   private disposed = false
+  private autoRecoveries = new Map<string, RecoverySource>()
+  private sessionContexts: SessionContextStore
+  private observedContexts = new Set<string>()
 
   constructor(rpc: CodexRpc, workspace: Workspace | WorkspaceCatalog, codexHome: string, dataDirectory = dirname(codexHome), sharedHistory = false) {
     super(); this.rpc = rpc; this.codexHome = codexHome; this.dataDirectory = dataDirectory; this.sharedHistory = sharedHistory
@@ -76,10 +82,14 @@ export class Bridge extends EventEmitter {
     this.attachments = new AttachmentStore(resolve(dataDirectory, 'attachments'))
     this.genui = new GenuiStore(resolve(dataDirectory, 'plugins/genui'))
     this.metrics = new RunHistory(resolve(dataDirectory, 'run-history'))
+    this.sessionContexts = new SessionContextStore(resolve(dataDirectory, 'session-context.json'))
     rpc.on('notification', message => this.notification(record(message)))
     rpc.on('request', message => this.request(record(message)))
     rpc.on('status', runtime => this.publish({ type: 'runtime', runtime }))
     rpc.on('disconnected', () => {
+      for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)
+      if (!this.disposed) for (const id of this.observedContexts) { void this.sessionContexts.invalidate(id); void this.sessionContexts.invalidate(`${id}:live`) }
+      this.observedContexts.clear()
       this.reconciliationEpoch++
       if (this.reconciliationTimer) clearTimeout(this.reconciliationTimer)
       this.reconciliationTimer = undefined; this.reconciling.clear(); this.reconciledAt.clear()
@@ -188,6 +198,7 @@ export class Bridge extends EventEmitter {
   approvals(): Approval[] { return [...this.pending.values()].map(value => value.approval) }
   queue(): QueuedMessage[] { return this.queued.map(({ input, ...value }) => value) }
   async updatePreferences(patch: Partial<Preferences>) {
+    if (patch.autoRecovery === false) for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)
     if (patch.genui !== undefined) await this.preferences.setSkill(genuiSkillPath, patch.genui)
     const snapshot = await this.preferences.update(patch)
     this.publish({ type: 'preferences', ...snapshot }); return snapshot
@@ -334,7 +345,8 @@ export class Bridge extends EventEmitter {
         }
         this.queued = this.queued.filter(value => value !== row); sent = true
         this.publish({ type: 'queue', queue: this.queue() })
-        await this.message(id, row.input)
+        this.cancelRecovery(id)
+        await this.submitMessage(id, row.input, undefined, undefined, false)
       })().catch(error => {
         this.todoLinksActive.delete(id)
         if (sent || this.queued.includes(row)) {
@@ -434,6 +446,8 @@ export class Bridge extends EventEmitter {
   /** One idempotent settlement path for a native event or read-only recovery. */
   private settleTurn(thread: ThreadView, turnId: string, status: string) {
     if (!turnId || this.threads.get(thread.id)?.turnId) return
+    const source = this.autoRecoveries.get(thread.id)
+    if (source && (thread.choicePending || this.approvals().some(approval => approval.threadId === thread.id))) source.blocked = true
     this.saveRunMetadata(thread, turnId)
     this.ownedTurns.delete(thread.id); this.todoLinksActive.delete(thread.id)
     for (const [key, request] of this.pending) if (request.approval.threadId === thread.id && (!request.approval.turnId || request.approval.turnId === turnId)) this.pending.delete(key)
@@ -446,10 +460,96 @@ export class Bridge extends EventEmitter {
     const last = thread.items.filter(item => item.type === 'agentMessage').at(-1)
     if (last?.text.includes('dsh-ui')) void this.genui.capture(thread.id, last.text).then(panels => { if (panels.length) this.publish({ type: 'genui', threadId: thread.id, panels }) }).catch(() => {})
     if (status === 'completed') this.drainQueue(thread.id)
+    void this.considerRecovery(thread.id, turnId, status).catch(() => {
+      const source = this.autoRecoveries.get(thread.id)
+      if (source) this.recoveryState(thread.id, source, 'manual', '无法安全检查自动恢复条件，请手动检查后继续。')
+    })
     if (this.sharedHistory) {
       const timer = setTimeout(() => { if (!this.disposed) void this.release(thread.id).catch(() => {}) }, 500)
       timer.unref()
     }
+  }
+
+  private cancelRecovery(id: string) {
+    const source = this.autoRecoveries.get(id)
+    if (source?.timer) clearTimeout(source.timer)
+    this.autoRecoveries.delete(id)
+    const thread = this.threads.get(id)
+    if (thread?.recovery) this.changed({ ...thread, recovery: null, error: thread.status === 'failed' ? thread.error || source?.failure || null : thread.error })
+    if (source) source.input = undefined
+  }
+
+  private recoveryState(id: string, source: RecoverySource, state: 'scheduled' | 'retrying' | 'manual' | 'recovered', message: string) {
+    if (this.autoRecoveries.get(id) !== source) return
+    const thread = this.threads.get(id)
+    if (!thread) return
+    this.changed({ ...thread, recovery: { state, attempt: source.attempt, maxAttempts: 1, sourceTurnId: source.sourceTurnId,
+      ...(source.retryTurnId ? { retryTurnId: source.retryTurnId } : {}), message },
+      error: state === 'manual' ? thread.error || source.failure || message : null })
+    if (state === 'manual') { source.input = undefined; this.autoRecoveries.delete(id) }
+  }
+
+  private async considerRecovery(id: string, turnId: string, status: string) {
+    const source = this.autoRecoveries.get(id)
+    if (!source || ![source.sourceTurnId, source.retryTurnId].includes(turnId)) return
+    if (status !== 'failed') {
+      if (status === 'completed' && source.attempt && this.threads.get(id)?.recovery?.state === 'retrying') this.recoveryState(id, source, 'manual', '重试轮次已结束，未收到可见回复，请检查会话后继续。')
+      else { if (source.timer) clearTimeout(source.timer); this.autoRecoveries.delete(id); source.input = undefined }
+      return
+    }
+    source.failure = this.threads.get(id)?.error || source.failure || '模型连接失败'
+    if (source.attempt >= 1) { this.recoveryState(id, source, 'manual', '已安全重试一次，仍未恢复，请检查错误后手动继续。'); return }
+    const preferences = (await this.preferences.snapshot()).preferences
+    if (this.autoRecoveries.get(id) !== source) return
+    if (!preferences.autoRecovery) { this.cancelRecovery(id); return }
+    const thread = this.threads.get(id)!
+    const decision = recoveryPolicy(thread, turnId, source.blocked || this.approvals().some(approval => approval.threadId === id))
+    if (!decision.allowed || !source.input) { this.recoveryState(id, source, 'manual', decision.message); return }
+    this.recoveryState(id, source, 'scheduled', `${decision.message}；将在 2 秒后安全重试一次。`)
+    source.timer = setTimeout(() => { source.timer = undefined; void this.retrySafely(id, source) }, 2000)
+    source.timer.unref()
+  }
+
+  private async retrySafely(id: string, source: RecoverySource) {
+    const eligible = () => {
+      const valid = !this.disposed && this.rpc.status.state === 'ready' && this.autoRecoveries.get(id) === source && !this.submitting.has(id) &&
+        this.threads.get(id)?.status === 'failed' && !this.threads.get(id)?.turnId && this.threads.get(id)?.runs?.at(-1)?.id === source.sourceTurnId
+      if (!valid && !this.disposed && this.autoRecoveries.get(id) === source) this.recoveryState(id, source, 'manual', '会话状态已变化，未自动重发，请检查后继续。')
+      return valid
+    }
+    try {
+      if (!eligible()) return
+      if (!(await this.preferences.snapshot()).preferences.autoRecovery) { this.cancelRecovery(id); return }
+      if (!eligible()) return
+      const before = this.threads.get(id)!, revision = before.revision
+      const native = await this.failedRecoveryTurn(id, source)
+      if (!eligible()) return
+      if (this.threads.get(id)!.revision !== revision) {
+        this.recoveryState(id, source, 'manual', 'CLI 记录或会话状态已变化，未自动重发，请检查后继续。'); return
+      }
+      const current = this.threads.get(id)!
+      const decision = recoveryPolicy({ ...current, items: native.items, choicePending: current.choicePending || native.choicePending, error: native.error || current.error || source.failure }, source.sourceTurnId, source.blocked || this.approvals().some(approval => approval.threadId === id))
+      if (!decision.allowed || !source.input) { this.recoveryState(id, source, 'manual', decision.message); return }
+      source.attempt = 1
+      const input = { ...source.input, clientMessageId: randomUUID(), steer: false }
+      this.recoveryState(id, source, 'retrying', '正在安全重试一次；原失败记录已保留。')
+      await this.submitMessage(id, input, undefined, source)
+    } catch {
+      this.recoveryState(id, source, 'manual', '无法确认安全重试已提交，未继续重发，请检查会话后手动继续。')
+    }
+  }
+
+  private async failedRecoveryTurn(id: string, source: RecoverySource): Promise<ThreadView> {
+    const raw = record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false })).thread)
+    if (record(raw.status).type === 'active') throw new BridgeError('RECOVERY_ACTIVE', 'CLI 仍有活动任务，未重复提交', 409)
+    const turns = raw.historyMode === 'legacy'
+      ? array(record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: true })).thread).turns).map(record)
+      : array(record(await this.rpc.call('thread/turns/list', { threadId: id, limit: 4, sortDirection: 'desc', itemsView: 'full' })).data).map(record).reverse()
+    const latest = turns.at(-1)
+    if (latest?.id !== source.sourceTurnId || latest.status !== 'failed' || turns.some(turn => turn.status === 'inProgress') || !Array.isArray(latest.items) || latest.itemsView && latest.itemsView !== 'full') throw new BridgeError('RECOVERY_CHANGED', 'CLI 尚未确认原任务失败，未重复提交', 409)
+    const projected = projectThread({ ...raw, turns: [latest] })
+    if (!projected.items.some(item => item.type === 'userMessage')) throw new BridgeError('RECOVERY_INCOMPLETE', 'CLI 未提供完整失败轮次，未重复提交', 409)
+    return projected
   }
 
   private changed(thread: ThreadView) {
@@ -493,7 +593,7 @@ export class Bridge extends EventEmitter {
         efforts: array(model.supportedReasoningEfforts).map(value => string(record(value).reasoningEffort)) }
     }) : []
     const account = accountResult.status === 'fulfilled' ? record(record(accountResult.value).account) : {}
-    return { capabilities: { fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
+    return { capabilities: { fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
       account: string(account.type) || '未检测到登录；自定义供应商可使用环境变量', threads: this.list() }
   }
 
@@ -584,6 +684,9 @@ export class Bridge extends EventEmitter {
     const result = record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false }))
     const thread = await this.projectHistory(result.thread)
     thread.todoTools = this.threads.get(id)?.todoTools
+    thread.recovery = this.threads.get(id)?.recovery
+    thread.contextUsage ||= this.threads.get(id)?.contextUsage
+    if (['scheduled', 'retrying'].includes(thread.recovery?.state || '')) thread.error = null
     const known = new Map(this.threads.get(id)?.items.map(item => [item.id, item]))
     thread.items = thread.items.map(item => { const old = known.get(item.id); return old && JSON.stringify(old) === JSON.stringify(item) ? old : item })
     thread.externalOwner = externalOwner
@@ -626,6 +729,9 @@ export class Bridge extends EventEmitter {
       config,
     }))
     const thread = await this.projectHistory(result.thread)
+    thread.recovery = this.threads.get(id)?.recovery
+    thread.contextUsage ||= this.threads.get(id)?.contextUsage
+    if (['scheduled', 'retrying'].includes(thread.recovery?.state || '')) thread.error = null
     thread.model = string(result.model) || thread.model
     this.todoMcpThreads.delete(id)
     if (this.plugin.enabled && nativeTodo) thread.todoTools = 'native'
@@ -648,6 +754,11 @@ export class Bridge extends EventEmitter {
   }
 
   async message(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }): Promise<void> {
+    this.cancelRecovery(id)
+    return this.submitMessage(id, input, edit)
+  }
+
+  private async submitMessage(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }, recovery?: RecoverySource, eligibleForRecovery = true): Promise<void> {
     if (this.submitting.has(id) && !this.ownedTurns.has(id) && ['completed', 'interrupted', 'failed'].includes(this.threads.get(id)?.status || '')) {
       await this.submissionDone.get(id)
     }
@@ -672,7 +783,8 @@ export class Bridge extends EventEmitter {
         if (!skill) throw new BridgeError('SKILL_MISSING', '选择的 Skill 已停用或不可用，请重新选择')
         return { type: 'skill', name: skill.name, path: skill.path }
       })
-      const nativeInput = [{ type: 'text', text: input.text }, ...await this.attachments.input(input.attachments || []), ...selectedSkills]
+      const preferences = (await this.preferences.snapshot()).preferences
+      const nativeInput = [{ type: 'text', text: input.text }, ...await this.attachments.input(input.attachments || [], { imageMode: preferences.imageInputMode }), ...selectedSkills]
       if (input.steer && !edit) {
         if (!thread.turnId) throw new BridgeError('NOT_RUNNING', '当前任务已经结束，可以发送新消息', 409)
         await this.rpc.call('turn/steer', { threadId: id, expectedTurnId: thread.turnId, input: nativeInput, ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}) })
@@ -706,6 +818,7 @@ export class Bridge extends EventEmitter {
         await mkdir(backupDirectory, { recursive: true, mode: 0o700 })
         await writeFile(resolve(backupDirectory, `${randomUUID()}.json`), JSON.stringify({ threadId: id, beforeTurnId: edit.turnId, createdAt: Date.now(), thread: backup }), { mode: 0o600, flag: 'wx' })
         const response = record(await this.rpc.call('thread/revert', { threadId: id, beforeTurnId: edit.turnId }))
+        await Promise.all([this.sessionContexts.invalidate(id), this.sessionContexts.invalidate(`${id}:live`)])
         reverted = true
         thread = await this.projectHistory(response.thread)
         thread.model ||= this.threads.get(id)?.model || ''; thread.todoTools = this.threads.get(id)?.todoTools
@@ -713,12 +826,27 @@ export class Bridge extends EventEmitter {
         this.queued = this.queued.filter(row => row.threadId !== id); this.publish({ type: 'queue', queue: this.queue() })
         await this.metrics.save(thread)
       }
-      const preferences = (await this.preferences.snapshot()).preferences
-      const context = [await this.plugin.context(id, this.todoMcpThreads.has(id) ? this.todoMcpName : undefined), preferences.genui ? genuiInstructions : '', choiceInstructions, 'To show a workspace screenshot or image in cweb, include a Markdown image with its absolute or workspace-relative file path. PNG, JPEG, WebP, GIF and AVIF are rendered locally; prefer this to returning only a filename.', 'Keep the user informed with brief, plain-language progress updates describing observable actions and their results. Match the conversation language. Do not expose internal reasoning.'].filter(Boolean).join('\n\n')
-      if (context) await this.rpc.call('thread/inject_items', { threadId: id,
-        items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: context }] }],
-      })
+      const note = await this.plugin.contextParts(id, this.todoMcpThreads.has(id) ? this.todoMcpName : undefined)
+      if (!this.observedContexts.has(id)) {
+        await Promise.all([this.sessionContexts.invalidate(id), this.sessionContexts.invalidate(`${id}:live`)])
+        this.observedContexts.add(id)
+      }
+      const context = [note.instructions, preferences.genui ? genuiInstructions : '', choiceInstructions, 'To show a workspace screenshot or image in cweb, include a Markdown image with its absolute or workspace-relative file path. PNG, JPEG, WebP, GIF and AVIF are rendered locally; prefer this to returning only a filename.', 'Keep the user informed with brief, plain-language progress updates describing observable actions and their results. Match the conversation language. Do not expose internal reasoning.'].filter(Boolean).join('\n\n')
+      const inject = (text: string) => this.rpc.call('thread/inject_items', { threadId: id, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text }] }] })
+      if (context) await this.sessionContexts.ensure(id, context, () => inject(context))
+      if (note.snapshot) await this.sessionContexts.ensure(`${id}:live`, note.snapshot, () => inject(note.snapshot))
       const quota = await this.captureQuota(); if (quota) this.quotaPending.set(id, quota)
+      if (recovery) {
+        const current = () => this.threads.get(id)
+        const valid = () => this.autoRecoveries.get(id) === recovery && !this.disposed && !current()?.turnId && current()?.status === 'failed' && current()?.runs?.at(-1)?.id === recovery.sourceTurnId
+        const beforeCheck = (await this.preferences.snapshot()).preferences
+        if (!valid() || !beforeCheck.autoRecovery) throw new BridgeError('AUTO_RECOVERY_CANCELLED', '自动重试已取消', 409)
+        const native = await this.failedRecoveryTurn(id, recovery)
+        const beforeCommit = (await this.preferences.snapshot()).preferences
+        if (!valid() || !beforeCommit.autoRecovery || !recoveryPolicy({ ...current()!, items: native.items, choicePending: current()?.choicePending || native.choicePending, error: native.error || recovery.failure }, recovery.sourceTurnId, recovery.blocked || this.approvals().some(approval => approval.threadId === id)).allowed) throw new BridgeError('AUTO_RECOVERY_CANCELLED', '自动重试条件已变化', 409)
+        recovery.starting = true
+      }
+      if (!recovery && eligibleForRecovery && preferences.autoRecovery) this.autoRecoveries.set(id, { input: structuredClone({ ...input, ...options, model: options.model || thread.model, steer: false }), sourceTurnId: '', attempt: 0, failure: '', starting: true })
       this.ownedTurns.add(id)
       try { const response = record(await this.rpc.call('turn/start', {
         threadId: id, input: nativeInput, cwd: thread.cwd, ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
@@ -729,11 +857,18 @@ export class Bridge extends EventEmitter {
         ...(collaborationMode ? { collaborationMode } : {}),
       })); this.fresh.delete(id)
         const turnId = string(record(response.turn).id)
-        const latest = this.threads.get(id)
+        const source = this.autoRecoveries.get(id)
+        if (source && !source.sourceTurnId) source.sourceTurnId = turnId
+        let latest = this.threads.get(id)
+        if (recovery && latest?.runs?.some(run => run.id === turnId)) {
+          recovery.retryTurnId = turnId
+          latest = { ...latest, runs: latest.runs.map(run => run.id === turnId ? { ...run, recoveryOf: recovery.sourceTurnId } : run) }
+          this.changed(latest)
+        }
         // The native acknowledgement can precede turn/started. Fence repeat sends
         // immediately, without reviving a turn that already completed in the stream.
         if (latest && turnId && this.ownedTurns.has(id) && latest.turnId !== turnId) this.changed({ ...latest, turnId, status: 'inProgress', error: null })
-      } catch (error) { this.ownedTurns.delete(id); this.quotaPending.delete(id); throw error }
+      } catch (error) { this.ownedTurns.delete(id); this.quotaPending.delete(id); if (!this.autoRecoveries.get(id)?.sourceTurnId) this.cancelRecovery(id); throw error }
       await this.preferences.setOptions(id, options); await this.preferences.recordSkills(skillPaths)
       this.publish({ type: 'preferences', ...await this.preferences.snapshot() })
     } catch (error) {
@@ -743,6 +878,7 @@ export class Bridge extends EventEmitter {
   }
 
   async interrupt(id: string): Promise<void> {
+    this.cancelRecovery(id)
     this.queued = this.queued.filter(row => row.threadId !== id)
     this.publish({ type: 'queue', queue: this.queue() })
     const thread = await this.open(id)
@@ -759,6 +895,7 @@ export class Bridge extends EventEmitter {
   }
 
   async archive(id: string): Promise<void> {
+    this.cancelRecovery(id)
     await this.assertAvailable(id)
     const thread = await this.open(id)
     if (thread.turnId) throw new BridgeError('BUSY', '请先停止当前任务再归档', 409)
@@ -798,9 +935,14 @@ export class Bridge extends EventEmitter {
     if (method === 'thread/goal/updated' || method === 'thread/goal/cleared') { this.publish({ type: 'goal', threadId: id, goal: method.endsWith('/cleared') ? null : params.goal as ThreadGoal }); return }
     if (method === 'thread/closed') { this.loaded.delete(id); this.todoMcpThreads.delete(id); return }
     if (method === 'thread/reverted') {
+      this.cancelRecovery(id)
+      void this.sessionContexts.invalidate(id); void this.sessionContexts.invalidate(`${id}:live`)
       this.readAt.delete(id)
       if (!this.submitting.has(id)) void this.readHistory(id).catch(() => {})
       return
+    }
+    if (method === 'thread/compacted' || ['item/started', 'item/completed'].includes(method) && record(params.item).type === 'contextCompaction') {
+      void this.sessionContexts.invalidate(id); void this.sessionContexts.invalidate(`${id}:live`)
     }
     if (method === 'thread/archived') {
       this.loaded.delete(id); this.threads.delete(id); this.summaries.delete(id)
@@ -808,6 +950,10 @@ export class Bridge extends EventEmitter {
     }
     const thread = this.threads.get(id)
     if (!thread) return
+    if (method === 'turn/completed' || method === 'error' && params.willRetry !== true) {
+      const source = this.autoRecoveries.get(id)
+      if (source && (thread.choicePending || this.approvals().some(approval => approval.threadId === id))) source.blocked = true
+    }
     const eventTurn = method === 'turn/completed' ? string(record(params.turn).id) : method === 'error' ? string(params.turnId) : ''
     if (eventTurn && thread.turnId && thread.turnId !== eventTurn) return
     if (eventTurn && !thread.turnId) {
@@ -826,7 +972,23 @@ export class Bridge extends EventEmitter {
         this.changed(next); this.saveRunMetadata(next, eventTurn); return
       }
     }
-    const next = applyNotification(thread, method, params)
+    let next = applyNotification(thread, method, params)
+    const recovery = this.autoRecoveries.get(id)
+    if (method === 'turn/started' && recovery) {
+      const started = string(record(params.turn).id)
+      if (!recovery.starting && started !== (recovery.retryTurnId || recovery.sourceTurnId)) {
+        if (recovery.timer) clearTimeout(recovery.timer)
+        recovery.input = undefined; this.autoRecoveries.delete(id); next = { ...next, recovery: null }
+      } else if (recovery.attempt) {
+        recovery.retryTurnId = started
+        next = { ...next, recovery: { state: 'retrying', attempt: 1, maxAttempts: 1, sourceTurnId: recovery.sourceTurnId, retryTurnId: started, message: '正在安全重试一次；原失败记录已保留。' },
+          runs: next.runs?.map(run => run.id === started ? { ...run, recoveryOf: recovery.sourceTurnId } : run) }
+      } else recovery.sourceTurnId = started
+      recovery.starting = false
+    } else if (recovery?.attempt && recovery.retryTurnId === string(params.turnId) && hasRecoveryOutput(method, params)) {
+      recovery.input = undefined
+      next = { ...next, recovery: { state: 'recovered', attempt: 1, maxAttempts: 1, sourceTurnId: recovery.sourceTurnId, retryTurnId: recovery.retryTurnId, message: '已恢复模型响应；任务仍按实际状态继续。' } }
+    }
     if (next !== thread) this.changed(next)
     if (method === 'thread/tokenUsage/updated' && next.runs?.some(run => run.id === params.turnId && run.status !== 'inProgress')) this.saveRunMetadata(next, string(params.turnId))
     if (method === 'turn/started') {
@@ -842,6 +1004,8 @@ export class Bridge extends EventEmitter {
     if (typeof wireId !== 'number' && typeof wireId !== 'string') return
     const params = record(message.params); const method = string(message.method)
     const threadId = string(params.threadId)
+    const recovery = this.autoRecoveries.get(threadId)
+    if (recovery) recovery.blocked = true
     if (method === 'item/tool/call' && this.threads.has(threadId)) {
       const run = async () => {
         if (!['render_ui', 'validate_dsh_ui'].includes(string(params.tool))) return this.plugin.call(threadId, string(params.tool), params.arguments)
@@ -884,12 +1048,14 @@ export class Bridge extends EventEmitter {
   }
 
   async dispose() {
+    for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)
     this.disposed = true; this.reconciliationEpoch++
     if (this.reconciliationTimer) clearTimeout(this.reconciliationTimer)
     this.reconciliationTimer = undefined; this.reconciling.clear(); this.reconciledAt.clear()
     await Promise.all([...this.metadataWrites])
     await this.metrics.flush()
     await this.rpc.dispose()
+    await this.sessionContexts.flush()
     await this.plugin.flush()
     await this.preferences.snapshot()
     for (const timer of this.renderTimers.values()) clearTimeout(timer)

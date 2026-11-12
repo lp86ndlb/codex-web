@@ -26,7 +26,7 @@ import { GoalPanel, type GoalPanelHandle } from './GoalPanel.tsx'
 import { ThreadNotices, useThreadNotices } from './ThreadNotices.tsx'
 import { Presence, useExitAction } from './Motion.tsx'
 import { threadReadEvent } from '../shared/navigation-order.ts'
-import { isThreadRunning, runStage, RunStatus } from './RunTimer.tsx'
+import { isThreadRunning, runStage, RunStatus, SessionFeedback } from './RunTimer.tsx'
 import { defaultRunningStyle, isRunningStyle, type RunningStyle } from './RunningBorder.tsx'
 import { echoedMessage, withPendingMessage, type DraftContents, type PendingMessage } from './pending-message.ts'
 
@@ -668,6 +668,7 @@ export function App() {
         <ApprovalStack approvals={currentApprovals} onError={setError} />
         <ChoiceDock />
         <RunStatus thread={thread} approvals={currentApprovals.length} />
+        <SessionFeedback thread={thread} />
         {pendingMessage && <div className={`message-delivery ${pendingMessage.state === 'failed' ? 'failed' : ''}`} role="status"><span>{pendingMessage.state === 'failed' ? `发送未确认：${pendingMessage.error}` : pendingMessage.state === 'syncing' ? '已提交，正在同步 CLI 记录…' : '正在发送…'}</span>{pendingMessage.state === 'failed' && <button type="button" onClick={() => recoverMessage(pendingMessage)}>恢复草稿</button>}</div>}
         <Presence show={Boolean(editing)} className="edit-message-banner"><Pencil size={15} /><div><strong>编辑历史消息</strong><span>{editing?.merged ? '本轮较早的指令已合并。' : ''}{running ? '发送时先停止当前任务，' : '发送后'}回退本轮及后续对话，项目文件不回退。</span></div><button type="button" disabled={busy} onClick={cancelEdit}>取消编辑</button></Presence>
         {!home && <Composer key={draftKey} editing={Boolean(editing)} input={composer} draft={draft} onDraft={setDraft} prefs={prefs} options={currentOptions} onOptions={changeOptions} models={boot?.models || []} loadingStyle={loadingStyle}
