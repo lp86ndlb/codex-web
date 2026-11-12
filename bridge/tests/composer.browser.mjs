@@ -29,7 +29,7 @@ try {
   await page.screenshot({ path: resolve(output, 'commands-aligned.png'), fullPage: true }); await input.press('Escape')
   assert.equal(await page.locator('.model-select').evaluate(node => { const r=node.querySelector('svg').getBoundingClientRect(); return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('[role="combobox"]')===node }), true)
   await page.getByRole('combobox', { name: '模型', exact: true }).click(); await page.getByRole('option', { name: '测试备用模型', exact: true }).click()
-  await page.getByRole('combobox', { name: '推理强度', exact: true }).click(); await page.getByRole('option', { name: '中', exact: true }).click()
+  await page.getByRole('combobox', { name: '推理强度', exact: true }).click(); await page.getByRole('option', { name: 'medium', exact: true }).click()
   await input.fill('保留这段输入')
   await add.click(); await page.getByRole('menu', { name: '添加到会话', exact: true }).waitFor()
   const positions = await page.locator('.composer-toolbar').evaluate(node => [...node.querySelectorAll('.composer-add-trigger,.composer-options > .icon-button,.model-select,.effort-select,.permission-menu > summary,.send-button')].map(el => { const r = el.getBoundingClientRect(); return r.top + r.height / 2 }))

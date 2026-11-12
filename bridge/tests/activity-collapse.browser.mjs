@@ -79,13 +79,13 @@ async function setting(value) {
 try {
   await page.goto(base); await page.getByRole('button', { name: /工作步骤收起验证/ }).first().click()
   await first.waitFor(); await setting()
-  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), '极致', 'The composer must localize ultra without changing its protocol value')
+  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), 'ultra', 'The composer keeps the requested CLI effort spelling without changing its protocol value')
   await page.keyboard.press('Control+,')
   await page.getByRole('button', { name: '模型与权限', exact: true }).click()
   for (const label of ['默认推理强度', '当前会话推理强度']) {
     const effort = page.getByLabel(label, { exact: true })
     assert.equal(await effort.inputValue(), 'ultra')
-    assert.equal(await effort.locator('option:checked').textContent(), '极致', 'Settings and composer must use the same visible effort label')
+    assert.equal(await effort.locator('option:checked').textContent(), '极致', 'Settings labels outside the requested composer control remain localized')
   }
   await page.getByRole('button', { name: '关闭对话框', exact: true }).click()
   await page.locator('.settings-dialog[open]').waitFor({ state: 'hidden' })

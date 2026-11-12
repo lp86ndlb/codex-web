@@ -5,8 +5,8 @@ import type { ThreadView } from '../shared/types.ts'
 import { Presence } from './Motion.tsx'
 
 /** The circle represents the CLI's latest input report, never lifetime tokens. */
-export function ContextUsagePopover({ thread, disabled = false, compactPending = false, onCompact }: {
-  thread?: ThreadView; disabled?: boolean; compactPending?: boolean; onCompact: () => Promise<void>
+export function ContextUsagePopover({ thread, disabled = false, compactPending = false, unavailableReason, onCompact }: {
+  thread?: ThreadView; disabled?: boolean; compactPending?: boolean; unavailableReason?: string; onCompact: () => Promise<void>
 }) {
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null); const popup = useRef<HTMLDivElement>(null)
@@ -23,7 +23,7 @@ export function ContextUsagePopover({ thread, disabled = false, compactPending =
   const level = !known ? 'unknown' : percentage >= 90 ? 'critical' : percentage >= 70 ? 'warning' : 'normal'
   const running = Boolean(thread?.turnId && !['failed', 'completed', 'interrupted'].includes(thread.status))
   const compacting = pending || compactPending || Boolean(thread?.compacting)
-  const reason = !thread ? '选择一个会话后可压缩上下文' : compacting ? '正在压缩上下文，等待 CLI 返回结果' : thread.externalOwner ? '这个会话仍在另一端执行，请在该端操作或等任务结束' : running ? '任务运行中可查看用量，等任务结束后再压缩' : disabled ? '连接就绪后可压缩上下文' : ''
+  const reason = !thread ? '选择一个会话后可压缩上下文' : compacting ? '正在压缩上下文，等待 CLI 返回结果' : thread.externalOwner ? '这个会话仍在另一端执行，请在该端操作或等任务结束' : running ? '任务运行中可查看用量，等任务结束后再压缩' : unavailableReason || (disabled ? '连接就绪后可压缩上下文' : '')
   const unavailable = Boolean(reason)
   const tokens = (value: number) => Math.round(value).toLocaleString('zh-CN')
   const remaining = known ? Math.max(0, usage!.windowTokens - usage!.inputTokens) : 0

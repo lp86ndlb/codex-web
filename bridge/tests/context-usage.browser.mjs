@@ -203,8 +203,66 @@ try {
   await page.screenshot({ path: resolve(output, 'context-usage-mobile.png'), fullPage: true })
   await close()
   await page.setViewportSize({ width: 1440, height: 900 })
+
+  // A newly published frontend can precede the idle-only backend update. Keep
+  // reading/reporting context available, while refusing unsafe legacy compact
+  // requests both from the popup and from the slash command.
+  await bridge.metrics.flush()
+  await page.route('**/api/bootstrap', async route => {
+    const response = await route.fetch(), value = await response.json()
+    if (value.capabilities) delete value.capabilities.contextUsageMenu
+    await route.fulfill({ response, contentType: 'application/json', body: JSON.stringify(value) })
+  })
+  const legacyCompactCalls = compactCalls().length, legacyCompactRequests = compactRequests.length
+  await page.reload(); await trigger.waitFor(); await page.getByText('本地引擎已连接', { exact: true }).waitFor()
+  await amount('30%'); await open()
+  const legacyReason = '快捷压缩将在服务空闲更新后启用；上下文用量可正常查看'
+  await panel.getByText(legacyReason, { exact: true }).waitFor()
+  assert.equal(await compact.isDisabled(), true)
+  assert.equal(await number('已用占比'), '30%')
+  usage(a, 42_000); await amount('42%')
+  assert.equal(await number('最近输入'), '42000tokens')
+  assert.equal(await number('剩余占比'), '58%约58000tokens')
+  await compact.evaluate(node => node.click())
+  assert.equal(compactCalls().length, legacyCompactCalls)
+  await page.screenshot({ path: resolve(output, 'context-usage-legacy-backend.png'), fullPage: true })
+  await close()
+  await input.fill('/compact')
+  await page.locator('.command-menu-row').filter({ hasText: '/compact' }).click()
+  await page.getByRole('alert').filter({ hasText: legacyReason }).waitFor()
+  assert.equal(compactCalls().length, legacyCompactCalls)
+  assert.equal(compactRequests.length, legacyCompactRequests, 'Legacy bootstrap capabilities must block the ordinary command path too')
+  assert.equal(messageRequests.length, 0)
+
+  // Composer effort names match the CLI's enum spelling, while the default
+  // choice and other controls stay Chinese. Selecting a label must preserve
+  // the underlying option value and the independently selected model.
+  const effort = page.getByRole('combobox', { name: '推理强度', exact: true })
+  const model = page.getByRole('combobox', { name: '模型', exact: true })
+  assert.equal((await effort.textContent()).trim(), '默认强度')
+  assert.equal((await model.textContent()).trim(), 'CLI 默认模型')
+  assert.equal((await page.locator('.permission-menu > summary').textContent()).trim(), '可写')
+  const beforeOptions = await (await page.request.get(`${base}/api/preferences`)).json()
+  const modelBefore = beforeOptions.sessionOptions[a]?.model ?? beforeOptions.preferences.model
+  await effort.click()
+  const effortOptions = page.getByRole('listbox', { name: '推理强度选项', exact: true })
+  await effortOptions.waitFor()
+  assert.deepEqual((await effortOptions.getByRole('option').allTextContents()).map(text => text.trim()), ['默认强度', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+  const changedOptions = page.waitForResponse(response => new URL(response.url()).pathname === `/api/threads/${a}/options` && response.request().method() === 'POST')
+  await effortOptions.getByRole('option', { name: 'ultra', exact: true }).click()
+  const snapshot = await (await changedOptions).json()
+  assert.equal(snapshot.sessionOptions[a].effort, 'ultra')
+  assert.equal(snapshot.sessionOptions[a].model, modelBefore)
+  await until(async () => (await effort.textContent()).trim() === 'ultra')
+  assert.equal((await model.textContent()).trim(), 'CLI 默认模型')
+  await open()
+  await panel.getByText(legacyReason, { exact: true }).waitFor()
+  assert.equal(await compact.isDisabled(), true)
+  await amount('42%'); await close()
+  assert.equal(compactCalls().length, legacyCompactCalls)
+  assert.equal(nativeCalls.filter(call => ['turn/start', 'thread/sample'].includes(call.method)).length, 0)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ unknownNotZero: true, latestInputNotLifetimeTokens: true, liveUsageUpdates: true, threadIsolation: true, warningAndCriticalThresholds: true, drawingClamped: true, anchoredUpward: true, escapedAndOutsideDismissed: true, exitRetained: true, runningAndExternalBlocked: true, nativeCompactOnly: true, duplicateCompactPrevented: true, failureRetry: true, waitsForNativeCompletion: true, usageRefreshFeedback: true, draftPreserved: true, mobile: true, pageErrors: errors }))
+  console.log(JSON.stringify({ unknownNotZero: true, latestInputNotLifetimeTokens: true, liveUsageUpdates: true, threadIsolation: true, warningAndCriticalThresholds: true, drawingClamped: true, anchoredUpward: true, escapedAndOutsideDismissed: true, exitRetained: true, runningAndExternalBlocked: true, nativeCompactOnly: true, duplicateCompactPrevented: true, failureRetry: true, waitsForNativeCompletion: true, usageRefreshFeedback: true, draftPreserved: true, mobile: true, legacyBackendReadOnly: true, legacyCommandBlocked: true, englishEffortLabels: true, protocolOptionsUnchanged: true, otherControlsChinese: true, pageErrors: errors }))
 } catch (error) {
   await page.screenshot({ path: resolve(output, 'context-usage-failure.png'), fullPage: true }).catch(() => {})
   throw error

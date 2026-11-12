@@ -436,6 +436,7 @@ export function App() {
     if (pending) return pending
     const current = viewsRef.current[id]
     if (!connected) throw new Error('请先连接 Codex CLI')
+    if (!boot?.capabilities?.contextUsageMenu) throw new Error('快捷压缩将在服务空闲更新后启用；上下文用量可正常查看')
     if (!current || loadingThread) throw new Error('会话正在载入，请稍后重试')
     if (isThreadRunning(current) || current.compacting) throw new Error('请等当前任务结束后再压缩上下文')
     if (current.externalOwner) throw new Error('请先结束另一端的任务，再在网页继续')
@@ -695,7 +696,7 @@ export function App() {
         {pendingMessage && <div className={`message-delivery ${pendingMessage.state === 'failed' ? 'failed' : ''}`} role="status"><span>{pendingMessage.state === 'failed' ? `发送未确认：${pendingMessage.error}` : pendingMessage.state === 'syncing' ? '已提交，正在同步 CLI 记录…' : '正在发送…'}</span>{pendingMessage.state === 'failed' && <button type="button" onClick={() => recoverMessage(pendingMessage)}>恢复草稿</button>}</div>}
         <Presence show={Boolean(editing)} className="edit-message-banner"><Pencil size={15} /><div><strong>编辑历史消息</strong><span>{editing?.merged ? '本轮较早的指令已合并。' : ''}{running ? '发送时先停止当前任务，' : '发送后'}回退本轮及后续对话，项目文件不回退。</span></div><button type="button" disabled={busy} onClick={cancelEdit}>取消编辑</button></Presence>
         {!home && <Composer key={draftKey} editing={Boolean(editing)} input={composer} draft={draft} onDraft={setDraft} prefs={prefs} options={currentOptions} onOptions={changeOptions} models={boot?.models || []} loadingStyle={loadingStyle}
-          thread={thread} compactPending={Boolean(thread?.compacting || selected && compactPending[selected])} onCompact={compactContext}
+          thread={thread} compactPending={Boolean(thread?.compacting || selected && compactPending[selected])} compactUnavailableReason={!boot?.capabilities?.contextUsageMenu ? '快捷压缩将在服务空闲更新后启用；上下文用量可正常查看' : undefined} onCompact={compactContext}
           files={files} onFiles={files => void addFiles(files)} onRemove={id => setFileDrafts(previous => ({ ...previous, [draftKey]: files.filter(file => file.id !== id) }))} uploading={Boolean(uploads[draftKey])}
           skills={skills} skillIndex={availableSkills} skillsLoading={skillsLoading} onRefreshSkills={() => setSkillsRevision(value => value + 1)} onToggleSkill={toggleSkill} onSkills={() => void selectSkills()} onRemoveSkill={path => setSkillDrafts(previous => ({ ...previous, [draftKey]: skills.filter(skill => skill.path !== path) }))}
           workspaceId={activeWorkspace?.id} referenceIndexReady={boot?.capabilities?.fileReferences} references={references} onToggleReference={toggleReference}

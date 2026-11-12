@@ -410,7 +410,7 @@ try {
   await page.getByRole('button', { name: '归档会话', exact: true }).click()
   await page.getByRole('heading', { name: /让想法/ }).waitFor()
   assert.equal(await page.getByRole('combobox', { name: '模型', exact: true }).textContent(), '测试模型')
-  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), '中')
+  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), 'medium')
 
   await page.getByRole('button', { name: /连接与设置/ }).click()
   await page.getByRole('button', { name: '归档会话', exact: true }).last().click()
