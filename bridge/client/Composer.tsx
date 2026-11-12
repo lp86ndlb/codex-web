@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { ArrowUp, Code2, Command, File, GitBranch, ListPlus, LoaderCircle, Paperclip, ShieldCheck, Sparkles, Square, Target, X, Check } from 'lucide-react'
-import type { AttachmentInfo, ModelOption, Preferences, QueuedMessage, SessionOptions, SkillInfo } from '../shared/types.ts'
+import type { AttachmentInfo, ModelOption, Preferences, QueuedMessage, SessionOptions, SkillInfo, ThreadView } from '../shared/types.ts'
 import { IconButton } from './components.tsx'
 import { commands } from './commands.ts'
 import { describeEffort } from '../shared/activity.ts'
@@ -10,6 +10,7 @@ import { ComposerAddMenu } from './ComposerAddMenu.tsx'
 import { RunningBorder, type RunningStyle } from './RunningBorder.tsx'
 import { Presence } from './Motion.tsx'
 import { ComposerSelect } from './ComposerSelect.tsx'
+import { ContextUsagePopover } from './ContextUsagePopover.tsx'
 
 export function Composer(p: {
   loadingStyle?: RunningStyle
@@ -21,6 +22,7 @@ export function Composer(p: {
   workspaceId?: string; referenceIndexReady?: boolean; references: string[]; onToggleReference: (path: string) => void
   history: string[]; running: boolean; busy: boolean; disabled: boolean; onSubmit: (queue?: boolean) => void
   onInterrupt: () => void; onCommand: (id: string) => void
+  thread?: ThreadView; compactPending?: boolean; onCompact: () => Promise<void>
   queue: QueuedMessage[]; onQueue: (id: string, retry?: boolean) => void
 }) {
   const picker = useRef<HTMLInputElement>(null)
@@ -61,7 +63,7 @@ export function Composer(p: {
     <form className="composer compact-composer" data-running={p.running || p.busy || undefined} data-sending={p.busy || undefined} onSubmit={event => { event.preventDefault(); if (reference) closeReferences(); else if (commandQuery && choices.length) { const exact = commandChoices.find(row => row.id === p.draft); if (exact) command(exact.id); else closeMenu() } else p.onSubmit() }}>
       {(p.running || p.busy) && <RunningBorder variant={p.loadingStyle} />}
       {(p.files.length > 0 || p.skills.length > 0 || p.references.length > 0 || p.uploading) && <div className="draft-attachments" aria-label="本轮附件与技能">{p.files.map(file => <div className={`attachment-chip ${file.kind}`} key={file.id}>{file.kind === 'image' ? <img src={file.url} alt={file.name} /> : <File size={19} />}<span title={file.name}>{file.name}<small>{file.size < 1024 ? `${file.size} B` : file.size < 1024 * 1024 ? `${Math.ceil(file.size / 1024)} KB` : `${(file.size / 1024 / 1024).toFixed(1)} MB`}</small></span><IconButton label={`移除附件 ${file.name}`} disabled={p.busy} onClick={() => p.onRemove(file.id)}><X size={13} /></IconButton></div>)}{p.references.map(path => <div className="reference-chip skill-chip" key={path}><File size={14} /><span title={path}>{path}</span><IconButton label={`移除引用 ${path}`} onClick={() => p.onToggleReference(path)}><X size={13} /></IconButton></div>)}{p.skills.map(skill => <div className="skill-chip" key={skill.path}><span>${skill.name}</span><IconButton label={`移除 Skill ${skill.name}`} disabled={p.busy} onClick={() => p.onRemoveSkill(skill.path)}><X size={13} /></IconButton></div>)}{p.uploading && <span className="uploading"><LoaderCircle className="spin" size={16} />正在添加附件…</span>}</div>}
-      <textarea ref={p.input} aria-label="发送给 Codex 的消息" placeholder={p.busy ? '消息已提交，可以继续写下一条…' : p.running ? '补充想法，或按 Tab 排到下一轮…' : '描述任务，@ 文件 · / 命令与 Skills · 拖入附件'} value={p.draft} rows={1} onChange={event => { setCaret(event.target.selectionStart); p.onDraft(event.target.value); setHistoryIndex(-1) }} onSelect={event => setCaret(event.currentTarget.selectionStart)}
+      <textarea ref={p.input} aria-label="发送给 Codex 的消息" placeholder={p.compactPending ? '正在压缩上下文，完成后可继续发送…' : p.busy ? '消息已提交，可以继续写下一条…' : p.running ? '补充想法，或按 Tab 排到下一轮…' : '描述任务，@ 文件 · / 命令与 Skills · 拖入附件'} value={p.draft} rows={1} onChange={event => { setCaret(event.target.selectionStart); p.onDraft(event.target.value); setHistoryIndex(-1) }} onSelect={event => setCaret(event.currentTarget.selectionStart)}
         onPaste={event => {
           const files = [...event.clipboardData.items].filter(item => item.kind === 'file').map(item => item.getAsFile()).filter((file): file is File => Boolean(file))
           if (!files.length) return
@@ -101,7 +103,7 @@ export function Composer(p: {
         <ComposerSelect label="模型" value={p.options.model} onChange={model => p.onOptions({ model, effort: '' })} className="model-select" icon={<Code2 size={16} />} title={p.running ? '模型更改将用于下一轮' : '选择本会话下一轮使用的模型'} options={[{ value: '', label: 'CLI 默认模型' }, ...(p.options.model && !p.models.some(row => row.id === p.options.model) ? [{ value: p.options.model, label: p.options.model }] : []), ...p.models.map(option => ({ value: option.id, label: option.label }))]} />
         <ComposerSelect label="推理强度" value={p.options.effort} onChange={effort => p.onOptions({ effort })} className="effort-select" options={[{ value: '', label: '默认强度' }, ...efforts.map(value => ({ value, label: describeEffort(value) }))]} />
         <details className="permission-menu"><summary title="此会话的权限与审批"><ShieldCheck size={16} /><span>{p.options.mode === 'danger-full-access' ? '完全权限' : p.options.mode === 'read-only' ? '只读' : '可写'}</span></summary><div><strong>当前会话权限</strong><label>文件权限<select aria-label="权限模式" value={p.options.mode} onChange={event => p.onOptions({ mode: event.target.value as SessionOptions['mode'], ...(event.target.value === 'danger-full-access' ? { approvalPolicy: 'never' as const } : {}) })}><option value="workspace-write">工作区可写</option><option value="read-only">只读</option><option value="danger-full-access">完全权限</option></select></label><label>审批方式<select aria-label="审批方式" disabled={p.options.mode === 'danger-full-access'} value={p.options.mode === 'danger-full-access' ? 'never' : p.options.approvalPolicy} onChange={event => p.onOptions({ approvalPolicy: event.target.value as SessionOptions['approvalPolicy'] })}><option value="on-request">按需审批</option><option value="untrusted">不可信操作先审批</option><option value="never">不请求审批</option></select></label><button type="button" onClick={() => p.onCommand('/permissions')}>设置新会话默认值</button></div></details>
-      </div><div className="send-actions">{p.running && !p.editing && <><IconButton label="排到下一轮" disabled={!canSend} onClick={() => p.onSubmit(true)}><ListPlus size={17} /></IconButton><IconButton label="停止执行" className="stop-button" onClick={p.onInterrupt}><Square size={13} fill="currentColor" /></IconButton></>}<button type="submit" className="send-button" aria-busy={p.busy} aria-label={p.editing ? '从编辑处继续' : p.running ? '补充指令' : '发送消息'} title={p.prefs.sendKey === 'enter' ? 'Enter 发送 · Shift Enter 换行' : 'Ctrl / ⌘ Enter 发送'} disabled={!canSend}><span className="send-glyph"><ArrowUp size={18} /></span></button></div></div>
+      </div><div className="send-actions"><ContextUsagePopover thread={p.thread} disabled={p.disabled || p.busy} compactPending={p.compactPending} onCompact={p.onCompact} />{p.running && !p.editing && <><IconButton label="排到下一轮" disabled={!canSend} onClick={() => p.onSubmit(true)}><ListPlus size={17} /></IconButton><IconButton label="停止执行" className="stop-button" onClick={p.onInterrupt}><Square size={13} fill="currentColor" /></IconButton></>}<button type="submit" className="send-button" aria-busy={p.busy} aria-label={p.editing ? '从编辑处继续' : p.running ? '补充指令' : '发送消息'} title={p.prefs.sendKey === 'enter' ? 'Enter 发送 · Shift Enter 换行' : 'Ctrl / ⌘ Enter 发送'} disabled={!canSend}><span className="send-glyph"><ArrowUp size={18} /></span></button></div></div>
     </form>
   </>
 }

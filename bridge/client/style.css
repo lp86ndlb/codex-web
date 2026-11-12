@@ -1250,3 +1250,35 @@ dialog[data-exiting]::backdrop { animation: backdrop-exit .18s ease both; }
 .choice-step { border: 0; padding: 0; margin: 4px 0 0; min-width: 0; animation: cweb-panel-in .2s var(--motion-ease); }
 .choice-step > legend { padding: 0 0 10px; font: 500 14px/1.65 var(--font-ui); }
 .choice-step[data-exiting] { animation: control-exit .18s cubic-bezier(.4,0,1,1) both; }
+
+/* Context input estimate, with the same top-layer motion as composer menus. */
+.compact-composer .context-usage-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 30px; min-width: 44px; padding: 2px 5px; border: 1px solid transparent; border-radius: 8px; color: var(--ink-secondary); background: transparent; font: 11px/1 var(--font-ui); font-variant-numeric: tabular-nums; transition: color .2s var(--motion-ease), background .2s var(--motion-ease), border-color .2s var(--motion-ease); }
+.compact-composer .context-usage-trigger:hover, .compact-composer .context-usage-trigger[aria-expanded='true'] { color: var(--ink); background: var(--composer-option-hover); border-color: var(--composer-option-border); }
+.context-usage-trigger svg { flex: none; transform: rotate(-90deg); overflow: visible; }
+.context-usage-trigger circle { fill: none; stroke-width: 2; }
+.context-ring-track { stroke: var(--line-strong); }
+.context-ring-value { stroke: currentColor; stroke-linecap: round; transition: stroke-dasharray .35s var(--motion-ease), stroke .2s var(--motion-ease); }
+.context-usage-trigger[data-level='warning'] .context-ring-value { stroke: var(--amber); }
+.context-usage-trigger[data-level='critical'] .context-ring-value { stroke: var(--danger); }
+.context-usage-trigger[data-level='unknown'] { color: var(--muted); }
+.context-usage-popover { position: fixed; inset: auto; margin: 0; padding: 15px; color: var(--ink); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 13px; box-shadow: var(--shadow-menu); overflow-y: auto; overscroll-behavior: contain; z-index: 120; transform-origin: right bottom; animation: composer-menu-enter .2s var(--motion-ease) both; font: 13px/1.55 var(--font-ui); }
+.context-usage-popover::backdrop { background: transparent; }
+.context-usage-popover[data-exiting] { animation: composer-menu-exit .16s cubic-bezier(.4,0,1,1) both; pointer-events: none; }
+.context-usage-heading, .context-usage-heading > span { display: flex; align-items: center; gap: 7px; }
+.context-usage-heading { justify-content: space-between; color: var(--ink-secondary); font-weight: 600; }
+.context-usage-report { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 11px; }
+.context-usage-report time { font-variant-numeric: tabular-nums; }
+.context-usage-numbers { margin: 9px 0; padding: 8px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.context-usage-numbers > div { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 4px 0; }
+.context-usage-numbers dt { color: var(--muted); }
+.context-usage-numbers dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.context-usage-numbers dd small { color: var(--muted); font-size: 11px; }
+.context-usage-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+.context-usage-actions { margin-top: 13px; }
+.context-compact-button { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; padding: 7px 10px; color: var(--ink-secondary); background: var(--composer-option-bg); border: 1px solid var(--composer-option-border); border-radius: 8px; transition: background .2s var(--motion-ease), border-color .2s var(--motion-ease); }
+.context-compact-button:hover:not(:disabled) { background: var(--composer-option-hover); border-color: var(--composer-option-border-active); }
+.context-compact-button:disabled { cursor: default; opacity: .55; }
+.context-compact-accepted { display: flex; align-items: flex-start; gap: 6px; color: var(--ink-secondary); font-size: 11px; line-height: 1.65; margin: 9px 0 0; }
+.context-compact-accepted svg { flex: none; margin-top: 2px; }
+.context-compact-error { color: var(--danger); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; margin: 9px 0 0; }
+@media (max-width: 640px) { .compact-composer .context-usage-trigger { min-width: 40px; gap: 3px; padding-inline: 3px; } }

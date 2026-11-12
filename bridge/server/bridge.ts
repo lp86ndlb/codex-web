@@ -21,6 +21,7 @@ import { SessionContextStore } from './session-context.ts'
 
 interface PendingRequest { wireId: string | number; approval: Approval; params: Record<string, unknown> }
 interface RecoverySource { input?: MessageInput; sourceTurnId: string; retryTurnId?: string; attempt: number; failure: string; blocked?: boolean; starting?: boolean; timer?: ReturnType<typeof setTimeout> }
+interface CompactOperation { previousTurns: Set<string>; turnId?: string; submitted: boolean }
 export interface MessageInput { text: string; model?: string; effort?: string; mode: Mode; approvalPolicy?: ApprovalPolicy; collaborationMode?: 'default' | 'plan'; steer?: boolean; attachments?: string[]; skills?: string[]; clientMessageId?: string }
 
 /** Native Codex owns history; this instance owns only live UI projections and unresolved prompts. */
@@ -72,6 +73,7 @@ export class Bridge extends EventEmitter {
   private autoRecoveries = new Map<string, RecoverySource>()
   private sessionContexts: SessionContextStore
   private observedContexts = new Set<string>()
+  private compactions = new Map<string, CompactOperation>()
 
   constructor(rpc: CodexRpc, workspace: Workspace | WorkspaceCatalog, codexHome: string, dataDirectory = dirname(codexHome), sharedHistory = false) {
     super(); this.rpc = rpc; this.codexHome = codexHome; this.dataDirectory = dataDirectory; this.sharedHistory = sharedHistory
@@ -87,6 +89,7 @@ export class Bridge extends EventEmitter {
     rpc.on('request', message => this.request(record(message)))
     rpc.on('status', runtime => this.publish({ type: 'runtime', runtime }))
     rpc.on('disconnected', () => {
+      for (const id of this.compactions.keys()) this.finishCompact(id, false)
       for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)
       if (!this.disposed) for (const id of this.observedContexts) { void this.sessionContexts.invalidate(id); void this.sessionContexts.invalidate(`${id}:live`) }
       this.observedContexts.clear()
@@ -109,7 +112,7 @@ export class Bridge extends EventEmitter {
   private publish(event: StreamEvent) { this.emit('event', event) }
   setHttpPort(port: number) { this.httpOrigin = `http://127.0.0.1:${port}` }
   get workspace() { return this.catalog.get(this.catalog.list()[0]?.id || '') }
-  get active() { return this.queued.length > 0 || this.creating > 0 || this.submitting.size > 0 || this.opening.size > 0 || [...this.threads.values()].some(thread => thread.turnId) }
+  get active() { return this.compactions.size > 0 || this.queued.length > 0 || this.creating > 0 || this.submitting.size > 0 || this.opening.size > 0 || [...this.threads.values()].some(thread => thread.turnId) }
   async initialize() { await this.catalog.initialize(); await this.plugin.initialize() }
   private async projectHistory(value: unknown) {
     const thread = projectThread(await this.hydrateHistory(value))
@@ -270,7 +273,7 @@ export class Bridge extends EventEmitter {
   }
   async release(id: string, allowQueue = false) {
     if (!this.loaded.has(id)) return
-    if (this.threads.get(id)?.turnId || this.submitting.has(id) || (!allowQueue && this.queued.some(row => row.threadId === id))) throw new BridgeError('BUSY', '当前会话仍在执行或排队，请先停止任务', 409)
+    if (this.compactions.has(id) || this.threads.get(id)?.turnId || this.submitting.has(id) || (!allowQueue && this.queued.some(row => row.threadId === id))) throw new BridgeError('BUSY', '当前会话仍在执行或排队，请先停止任务', 409)
     await this.rpc.call('thread/unsubscribe', { threadId: id })
     this.loaded.delete(id); this.fresh.delete(id); this.todoMcpThreads.delete(id)
   }
@@ -289,9 +292,40 @@ export class Bridge extends EventEmitter {
     await this.rpc.call('thread/unarchive', { threadId: id }); await this.refreshList(true)
   }
   async compact(id: string) {
-    const thread = await this.open(id, true)
-    if (thread.turnId) throw new BridgeError('BUSY', '请等当前任务结束后再压缩上下文', 409)
-    await this.rpc.call('thread/compact/start', { threadId: id })
+    this.cancelRecovery(id)
+    if (this.compactions.has(id) || this.submitting.has(id) || this.queued.some(row => row.threadId === id)) throw new BridgeError('BUSY', '当前会话正在执行、提交或排队，请稍后压缩上下文', 409)
+    const operation: CompactOperation = { previousTurns: new Set(this.threads.get(id)?.runs?.map(run => run.id)), submitted: false }
+    this.compactions.set(id, operation)
+    try {
+      await this.open(id, true)
+      const native = record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false })).thread)
+      const thread = this.threads.get(id)
+      if (this.disposed || this.compactions.get(id) !== operation || !thread || thread.turnId || thread.externalOwner || record(native.status).type === 'active' || this.submitting.has(id) || this.queued.some(row => row.threadId === id) || thread.choicePending || this.approvals().some(approval => approval.threadId === id)) throw new BridgeError('BUSY', '当前会话仍在执行或等待输入，请稍后压缩上下文', 409)
+      operation.previousTurns = new Set(thread.runs?.map(run => run.id))
+      this.changed({ ...thread, compacting: true, error: null })
+      operation.submitted = true
+      this.scheduleReconciliation()
+      await this.rpc.call('thread/compact/start', { threadId: id })
+    } catch (error) {
+      // A request timeout may already have been accepted by the native engine.
+      // Keep the reservation until a real lifecycle event/disconnect resolves it.
+      if (this.compactions.get(id) === operation) {
+        if (!(operation.submitted && error instanceof BridgeError && error.code === 'CLI_TIMEOUT')) this.finishCompact(id, !operation.submitted, operation.submitted)
+        const thread = this.threads.get(id)
+        if (thread) this.changed({ ...thread, error: error instanceof Error ? error.message : '上下文压缩请求失败' })
+      }
+      throw error
+    }
+  }
+  private finishCompact(id: string, drain = true, failed = false) {
+    if (!this.compactions.delete(id)) return
+    const thread = this.threads.get(id)
+    if (thread?.compacting) this.changed({ ...thread, compacting: false })
+    if (failed) {
+      for (const row of this.queued) if (row.threadId === id && !row.error) row.error = '上下文压缩未完成，请检查后重试'
+      this.publish({ type: 'queue', queue: this.queue() })
+    }
+    if (drain && !this.disposed) this.drainQueue(id)
   }
   async enqueue(id: string, input: MessageInput) {
     await this.assertAvailable(id)
@@ -325,7 +359,7 @@ export class Bridge extends EventEmitter {
   private drainQueue(id: string) {
     setImmediate(() => {
       const row = this.queued.find(row => row.threadId === id)
-      if (!row || row.error || this.draining.has(id) || this.submitting.has(id) || this.threads.get(id)?.turnId) return
+      if (!row || row.error || this.compactions.has(id) || this.draining.has(id) || this.submitting.has(id) || this.threads.get(id)?.turnId) return
       if (this.rpc.status.state !== 'ready') { if (row.kind === 'todo-link') this.retryTodoLink(id); return }
       this.draining.add(id)
       let waiting = false; let sent = false
@@ -363,6 +397,7 @@ export class Bridge extends EventEmitter {
   /** Check only the native current turn. Silence, idle and notLoaded are never
    * evidence that a turn finished, and no recovery path starts/stops work. */
   async reconcile(id: string, force = false): Promise<ThreadView | undefined> {
+    if (this.compactions.get(id)?.submitted && !this.threads.get(id)?.turnId) return this.reconcileCompact(id, force)
     const pending = this.reconciling.get(id)
     if (pending) return pending
     const before = this.threads.get(id)
@@ -431,11 +466,46 @@ export class Bridge extends EventEmitter {
   }
 
   async reconcileActive(force = false) {
-    await Promise.allSettled([...this.threads.values()].filter(thread => thread.turnId && thread.status === 'inProgress').map(thread => this.reconcile(thread.id, force)))
+    const ids = new Set([...this.threads.values()].filter(thread => thread.turnId && thread.status === 'inProgress').map(thread => thread.id))
+    for (const [id, operation] of this.compactions) if (operation.submitted) ids.add(id)
+    await Promise.allSettled([...ids].map(id => this.reconcile(id, force)))
+  }
+
+  private async reconcileCompact(id: string, force: boolean): Promise<ThreadView | undefined> {
+    const pending = this.reconciling.get(id)
+    if (pending) return pending
+    const compact = this.compactions.get(id), before = this.threads.get(id)
+    if (!compact?.submitted || !before || this.disposed || this.rpc.status.state !== 'ready') return before
+    if (!force && this.reconciledAt.has(id) && Date.now() - this.reconciledAt.get(id)! < 15_000) return before
+    this.reconciledAt.set(id, Date.now())
+    const epoch = this.reconciliationEpoch, revision = before.revision
+    const current = () => !this.disposed && epoch === this.reconciliationEpoch && this.compactions.get(id) === compact && this.threads.get(id)?.revision === revision
+    const operation = (async () => {
+      try {
+        const raw = record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false })).thread)
+        if (!current() || record(raw.status).type === 'active') return this.threads.get(id)
+        const turns = raw.historyMode === 'legacy'
+          ? array(record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: true })).thread).turns).map(record).reverse()
+          : array(record(await this.rpc.call('thread/turns/list', { threadId: id, limit: 4, sortDirection: 'desc', itemsView: 'full' })).data).map(record)
+        if (!current() || turns.some(turn => turn.status === 'inProgress')) return this.threads.get(id)
+        const done = turns.find(turn => ['completed', 'failed', 'interrupted'].includes(string(turn.status)) &&
+          (compact.turnId ? turn.id === compact.turnId : !compact.previousTurns.has(string(turn.id)) && array(turn.items).some(item => record(item).type === 'contextCompaction')))
+        // idle/notLoaded or an unchanged historical turn is never sufficient.
+        if (done) {
+          this.finishCompact(id, done.status === 'completed', done.status !== 'completed')
+          const latest = this.threads.get(id)
+          if (latest) this.changed({ ...latest, error: done.status === 'failed' ? string(record(done.error).message) || '原生上下文压缩失败，请检查后重试' : null })
+          void this.sessionContexts.invalidate(id); void this.sessionContexts.invalidate(`${id}:live`)
+        }
+      } catch { /* Keep unknown native work reserved; a later read can prove completion. */ }
+      return this.threads.get(id)
+    })().finally(() => { if (this.reconciling.get(id) === operation) this.reconciling.delete(id) })
+    this.reconciling.set(id, operation)
+    return operation
   }
 
   private scheduleReconciliation() {
-    if (this.disposed || this.reconciliationTimer || this.rpc.status.state !== 'ready' || ![...this.threads.values()].some(thread => thread.turnId && thread.status === 'inProgress')) return
+    if (this.disposed || this.reconciliationTimer || this.rpc.status.state !== 'ready' || ![...this.threads.values()].some(thread => thread.turnId && thread.status === 'inProgress') && ![...this.compactions.values()].some(operation => operation.submitted)) return
     this.reconciliationTimer = setTimeout(() => {
       this.reconciliationTimer = undefined
       void this.reconcileActive().finally(() => this.scheduleReconciliation())
@@ -446,6 +516,11 @@ export class Bridge extends EventEmitter {
   /** One idempotent settlement path for a native event or read-only recovery. */
   private settleTurn(thread: ThreadView, turnId: string, status: string) {
     if (!turnId || this.threads.get(thread.id)?.turnId) return
+    const compact = this.compactions.get(thread.id)
+    if (compact?.turnId === turnId) {
+      this.finishCompact(thread.id, false)
+      void this.sessionContexts.invalidate(thread.id); void this.sessionContexts.invalidate(`${thread.id}:live`)
+    }
     const source = this.autoRecoveries.get(thread.id)
     if (source && (thread.choicePending || this.approvals().some(approval => approval.threadId === thread.id))) source.blocked = true
     this.saveRunMetadata(thread, turnId)
@@ -593,7 +668,7 @@ export class Bridge extends EventEmitter {
         efforts: array(model.supportedReasoningEfforts).map(value => string(record(value).reasoningEffort)) }
     }) : []
     const account = accountResult.status === 'fulfilled' ? record(record(accountResult.value).account) : {}
-    return { capabilities: { fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
+    return { capabilities: { fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true, contextUsageMenu: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
       account: string(account.type) || '未检测到登录；自定义供应商可使用环境变量', threads: this.list() }
   }
 
@@ -685,6 +760,7 @@ export class Bridge extends EventEmitter {
     const thread = await this.projectHistory(result.thread)
     thread.todoTools = this.threads.get(id)?.todoTools
     thread.recovery = this.threads.get(id)?.recovery
+    thread.compacting = this.compactions.has(id)
     thread.contextUsage ||= this.threads.get(id)?.contextUsage
     if (['scheduled', 'retrying'].includes(thread.recovery?.state || '')) thread.error = null
     const known = new Map(this.threads.get(id)?.items.map(item => [item.id, item]))
@@ -730,6 +806,7 @@ export class Bridge extends EventEmitter {
     }))
     const thread = await this.projectHistory(result.thread)
     thread.recovery = this.threads.get(id)?.recovery
+    thread.compacting = this.compactions.has(id)
     thread.contextUsage ||= this.threads.get(id)?.contextUsage
     if (['scheduled', 'retrying'].includes(thread.recovery?.state || '')) thread.error = null
     thread.model = string(result.model) || thread.model
@@ -759,9 +836,11 @@ export class Bridge extends EventEmitter {
   }
 
   private async submitMessage(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }, recovery?: RecoverySource, eligibleForRecovery = true): Promise<void> {
+    if (this.compactions.has(id)) throw new BridgeError('BUSY', '上下文正在压缩，请完成后再发送消息', 409)
     if (this.submitting.has(id) && !this.ownedTurns.has(id) && ['completed', 'interrupted', 'failed'].includes(this.threads.get(id)?.status || '')) {
       await this.submissionDone.get(id)
     }
+    if (this.compactions.has(id)) throw new BridgeError('BUSY', '上下文正在压缩，请完成后再发送消息', 409)
     if (this.submitting.has(id)) throw new BridgeError('BUSY', '消息正在提交，请稍候', 409)
     this.submitting.add(id)
     let finish!: () => void
@@ -896,6 +975,7 @@ export class Bridge extends EventEmitter {
 
   async archive(id: string): Promise<void> {
     this.cancelRecovery(id)
+    if (this.compactions.has(id)) throw new BridgeError('BUSY', '上下文正在压缩，请完成后再归档', 409)
     await this.assertAvailable(id)
     const thread = await this.open(id)
     if (thread.turnId) throw new BridgeError('BUSY', '请先停止当前任务再归档', 409)
@@ -932,6 +1012,21 @@ export class Bridge extends EventEmitter {
       this.publish({ type: 'approvals', approvals: this.approvals() }); return
     }
     const id = string(params.threadId)
+    const compact = this.compactions.get(id)
+    if (compact?.submitted) {
+      const turnId = string(params.turnId) || string(record(params.turn).id)
+      const fresh = !turnId || !compact.previousTurns.has(turnId)
+      if (!compact.turnId && fresh && (method === 'turn/started' || method === 'item/started' && record(params.item).type === 'contextCompaction')) compact.turnId = turnId || undefined
+      const matching = !turnId || (compact.turnId ? turnId === compact.turnId : fresh)
+      if (matching && (method === 'thread/compacted' || Boolean(turnId) && (method === 'item/completed' && record(params.item).type === 'contextCompaction' || method === 'turn/completed' || method === 'error' && params.willRetry !== true))) {
+        const failed = method === 'error' || method === 'turn/completed' && record(params.turn).status !== 'completed'
+        this.finishCompact(id, !failed, failed)
+        if (method === 'error' && params.willRetry !== true) {
+          const current = this.threads.get(id)
+          if (current) this.changed({ ...current, error: string(record(params.error).message) || '上下文压缩失败' })
+        }
+      }
+    }
     if (method === 'thread/goal/updated' || method === 'thread/goal/cleared') { this.publish({ type: 'goal', threadId: id, goal: method.endsWith('/cleared') ? null : params.goal as ThreadGoal }); return }
     if (method === 'thread/closed') { this.loaded.delete(id); this.todoMcpThreads.delete(id); return }
     if (method === 'thread/reverted') {
@@ -945,6 +1040,7 @@ export class Bridge extends EventEmitter {
       void this.sessionContexts.invalidate(id); void this.sessionContexts.invalidate(`${id}:live`)
     }
     if (method === 'thread/archived') {
+      this.finishCompact(id, false)
       this.loaded.delete(id); this.threads.delete(id); this.summaries.delete(id)
       this.publish({ type: 'threads', threads: this.list() }); return
     }
@@ -1048,6 +1144,7 @@ export class Bridge extends EventEmitter {
   }
 
   async dispose() {
+    for (const id of this.compactions.keys()) this.finishCompact(id, false)
     for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)
     this.disposed = true; this.reconciliationEpoch++
     if (this.reconciliationTimer) clearTimeout(this.reconciliationTimer)

@@ -65,6 +65,8 @@ export function App() {
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const compactRequests = useRef(new Map<string, Promise<void>>())
+  const [compactPending, setCompactPending] = useState<Record<string, boolean>>({})
   const [loadingThread, setLoadingThread] = useState(false)
   const [streamConnected, setStreamConnected] = useState(false)
   const [sidebar, setSidebar] = useState(false)
@@ -427,6 +429,28 @@ export function App() {
   }
   function toggleSkill(skill: SkillInfo) { setSkillDrafts(previous => { const rows = previous[draftKey] || []; return { ...previous, [draftKey]: rows.some(row => row.path === skill.path) ? rows.filter(row => row.path !== skill.path) : [...rows, skill].slice(0, 10) } }) }
   function toggleReference(path: string) { setReferenceDrafts(previous => { const rows = previous[draftKey] || []; return { ...previous, [draftKey]: rows.includes(path) ? rows.filter(row => row !== path) : [...rows, path].slice(0, 20) } }) }
+  async function compactContext() {
+    const id = selected
+    if (!id) throw new Error('请先打开一个会话')
+    const pending = compactRequests.current.get(id)
+    if (pending) return pending
+    const current = viewsRef.current[id]
+    if (!connected) throw new Error('请先连接 Codex CLI')
+    if (!current || loadingThread) throw new Error('会话正在载入，请稍后重试')
+    if (isThreadRunning(current) || current.compacting) throw new Error('请等当前任务结束后再压缩上下文')
+    if (current.externalOwner) throw new Error('请先结束另一端的任务，再在网页继续')
+    if (busy || sending.current || pendingMessage) throw new Error('消息正在同步，请稍后压缩上下文')
+    setCompactPending(previous => ({ ...previous, [id]: true }))
+    const request = api(`/threads/${encodeURIComponent(id)}/compact`, {}).then(() => {
+      if (selectedRef.current === id) setToast('CLI 已接受压缩请求，等待上下文更新')
+    })
+    compactRequests.current.set(id, request)
+    try { await request }
+    finally {
+      if (compactRequests.current.get(id) === request) compactRequests.current.delete(id)
+      setCompactPending(previous => { const next = { ...previous }; delete next[id]; return next })
+    }
+  }
   function runCommand(id: string) {
     setPalette(null)
     const tabs: Record<string, SettingsTab> = { '/model': 'models', '/permissions': 'models', '/skills': 'skills', '/settings': 'general', '/status': 'status', '/archives': 'archives', '/help': 'shortcuts' }
@@ -447,8 +471,7 @@ export function App() {
     else if (id === '/copy') void copyReply()
     else if (id === '/stop') void interrupt()
     else if (id === '/archive') void archive()
-    else if (id === '/compact' && selected) void api(`/threads/${encodeURIComponent(selected)}/compact`, {}).then(() => setToast('CLI 已开始压缩上下文')).catch(error => setError(message(error)))
-    else if (id === '/compact') setError('请先打开一个会话')
+    else if (id === '/compact') void compactContext().catch(error => { if (selectedRef.current === selected) setError(message(error)) })
   }
   async function addFiles(incoming: File[]) {
     const key = draftKey
@@ -672,10 +695,11 @@ export function App() {
         {pendingMessage && <div className={`message-delivery ${pendingMessage.state === 'failed' ? 'failed' : ''}`} role="status"><span>{pendingMessage.state === 'failed' ? `发送未确认：${pendingMessage.error}` : pendingMessage.state === 'syncing' ? '已提交，正在同步 CLI 记录…' : '正在发送…'}</span>{pendingMessage.state === 'failed' && <button type="button" onClick={() => recoverMessage(pendingMessage)}>恢复草稿</button>}</div>}
         <Presence show={Boolean(editing)} className="edit-message-banner"><Pencil size={15} /><div><strong>编辑历史消息</strong><span>{editing?.merged ? '本轮较早的指令已合并。' : ''}{running ? '发送时先停止当前任务，' : '发送后'}回退本轮及后续对话，项目文件不回退。</span></div><button type="button" disabled={busy} onClick={cancelEdit}>取消编辑</button></Presence>
         {!home && <Composer key={draftKey} editing={Boolean(editing)} input={composer} draft={draft} onDraft={setDraft} prefs={prefs} options={currentOptions} onOptions={changeOptions} models={boot?.models || []} loadingStyle={loadingStyle}
+          thread={thread} compactPending={Boolean(thread?.compacting || selected && compactPending[selected])} onCompact={compactContext}
           files={files} onFiles={files => void addFiles(files)} onRemove={id => setFileDrafts(previous => ({ ...previous, [draftKey]: files.filter(file => file.id !== id) }))} uploading={Boolean(uploads[draftKey])}
           skills={skills} skillIndex={availableSkills} skillsLoading={skillsLoading} onRefreshSkills={() => setSkillsRevision(value => value + 1)} onToggleSkill={toggleSkill} onSkills={() => void selectSkills()} onRemoveSkill={path => setSkillDrafts(previous => ({ ...previous, [draftKey]: skills.filter(skill => skill.path !== path) }))}
           workspaceId={activeWorkspace?.id} referenceIndexReady={boot?.capabilities?.fileReferences} references={references} onToggleReference={toggleReference}
-          history={history} running={running} busy={busy || pendingMessage?.state === 'syncing'} disabled={!connected || !activeWorkspace || Boolean(thread?.externalOwner) || Boolean(pendingMessage)} onSubmit={queued => void submit(queued)} onInterrupt={() => void interrupt()} onCommand={runCommand}
+          history={history} running={running} busy={busy || pendingMessage?.state === 'syncing'} disabled={!connected || !activeWorkspace || Boolean(thread?.externalOwner) || Boolean(pendingMessage) || Boolean(thread?.compacting || selected && compactPending[selected])} onSubmit={queued => void submit(queued)} onInterrupt={() => void interrupt()} onCommand={runCommand}
           queue={queue.filter(row => row.threadId === selected)} onQueue={(id, retry) => void api(`/queue/${id}/${retry ? 'retry' : 'remove'}`, {}).catch(error => setError(message(error)))} />}
 
       </div></div>{thread && <TurnNavigator items={thread.items} viewport={transcript} onNavigate={navigateMessage} />}<ThreadNotices notices={notices} workspaces={workspaces} onJump={jumpToNotice} onDismiss={dismissNotice} /></div>

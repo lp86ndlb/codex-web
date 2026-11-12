@@ -100,6 +100,8 @@ export interface ThreadView {
   progress?: ThreadProgress | null
   recovery?: ThreadRecovery | null
   contextUsage?: ContextUsage | null
+  /** A manual native compaction has been accepted and has not settled yet. */
+  compacting?: boolean
   items: Item[]
   plan: { step: string; status: string }[]
   diff: string
@@ -135,7 +137,7 @@ export interface RuntimeStatus {
 }
 
 export interface Bootstrap {
-  capabilities?: { fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean }
+  capabilities?: { fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
   token: string
   root: string
   workspaces: WorkspaceInfo[]

@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from 'react'
-import { Check, CircleAlert, Clock3, Gauge, RefreshCw } from 'lucide-react'
+import { Check, CircleAlert, Clock3, RefreshCw } from 'lucide-react'
 import type { RunMetrics, ThreadView } from '../shared/types.ts'
 import { activityTitle } from './components.tsx'
 
@@ -10,6 +10,7 @@ export function isThreadRunning(thread?: ThreadView) {
 /** Older running servers expose compaction as a native item without a status.
  * Only inspect this turn's explicit compaction timestamps, never old history. */
 export function runStage(thread?: ThreadView): 'working' | 'compacting' | 'retrying' {
+  if (thread?.compacting) return 'compacting'
   if (!isThreadRunning(thread)) return 'working'
   if (thread?.progress) return thread.progress.stage
   const item = thread?.items.findLast(item => item.turnId === thread.turnId && item.type === 'contextCompaction')
@@ -76,13 +77,9 @@ export const RunStatus = memo(function RunStatus({ thread, approvals }: { thread
  * can be waiting for a retry without pretending that model output is active. */
 export const SessionFeedback = memo(function SessionFeedback({ thread }: { thread?: ThreadView }) {
   const recovery = thread?.recovery
-  const usage = thread?.contextUsage
-  const ratio = usage && Number.isFinite(usage.inputTokens) && Number.isFinite(usage.windowTokens) && usage.inputTokens >= 0 && usage.windowTokens > 0 ? usage.inputTokens / usage.windowTokens : 0
-  const showUsage = ratio >= .7
-  if (!recovery && !showUsage) return null
+  if (!recovery) return null
   const titles = { scheduled: '准备自动重试', retrying: '正在自动重试', manual: '需要手动继续', recovered: '响应已恢复' }
   return <div className="session-feedback">
     {recovery && <div className="session-feedback-row recovery-status" data-recovery={recovery.state} role="status" aria-label="自动恢复状态">{recovery.state === 'recovered' ? <Check size={14} /> : recovery.state === 'manual' ? <CircleAlert size={14} /> : <RefreshCw size={14} />}<span className="session-feedback-copy"><strong>{titles[recovery.state]}</strong>{recovery.maxAttempts > 0 && <small className="recovery-count">{recovery.attempt}/{recovery.maxAttempts}</small>}{recovery.message && <span className="session-feedback-message" title={recovery.message}>{recovery.message}</span>}</span></div>}
-    {showUsage && usage && <div className="session-feedback-row context-usage-hint" role="note" aria-label="上下文使用提示" title={`CLI 最近报告的输入 ${Math.round(usage.inputTokens).toLocaleString()} tokens / 上下文窗口 ${Math.round(usage.windowTokens).toLocaleString()} tokens`}><Gauge size={14} /><span className="session-feedback-copy"><strong>最近已知输入约占上下文 {Math.round(ratio * 100)}%</strong><span className="session-feedback-message">这是 CLI 最近报告的输入用量，并非当前请求尺寸。可用 /compact 压缩，或整理摘要后在新话题接续。</span></span></div>}
   </div>
 })
