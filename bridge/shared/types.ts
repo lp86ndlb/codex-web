@@ -20,6 +20,13 @@ export interface RunMetrics { id: string; status: string; startedAt?: number; co
 export interface SkillInfo { name: string; description: string; path: string; scope: string; enabled: boolean; uses: number; lastUsed: number }
 export interface QueuedMessage { id: string; threadId: string; text: string; attachmentCount: number; kind?: 'todo-link'; error?: string }
 export type RunStatus = 'idle' | 'inProgress' | 'completed' | 'interrupted' | 'failed'
+export interface ThreadProgress {
+  stage: 'working' | 'compacting' | 'retrying'
+  message?: string
+  updatedAt: number
+  lastEventAt: number
+  attempt?: number
+}
 
 export interface Item {
   id: string
@@ -78,6 +85,7 @@ export interface ThreadView {
   updatedAt: number
   status: RunStatus
   turnId: string | null
+  progress?: ThreadProgress | null
   items: Item[]
   plan: { step: string; status: string }[]
   diff: string
@@ -113,7 +121,7 @@ export interface RuntimeStatus {
 }
 
 export interface Bootstrap {
-  capabilities?: { fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean }
+  capabilities?: { fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean }
   token: string
   root: string
   workspaces: WorkspaceInfo[]

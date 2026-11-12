@@ -41,7 +41,7 @@ export function projectItem(value: unknown): Item {
     text = JSON.stringify(raw, null, 2)
   }
   return {
-    id: string(raw.id), type, text: text.slice(-visibleLimit), status: string(raw.status),
+    id: string(raw.id), type, text: text.slice(-visibleLimit), status: string(raw.status) || (type === 'contextCompaction' ? positive(raw.completedAtMs) ? 'completed' : positive(raw.startedAtMs) ? 'inProgress' : '' : ''),
     ...(type === 'reasoning' ? { summaryParts } : {}),
     ...(type === 'agentMessage' && raw.phase ? { phase: string(raw.phase) } : {}),
     ...(type === 'agentMessage' && raw.delivery === 'async' ? { delivery: 'async' as const } : {}),
@@ -87,6 +87,11 @@ export function projectThread(value: unknown): ThreadView {
     status: ['inProgress', 'completed', 'interrupted', 'failed'].includes(string(status))
       ? status as ThreadView['status'] : 'idle',
     turnId: active ? string(active.id) : null,
+    progress: active ? (() => {
+      const compact = items.findLast(item => item.turnId === active.id && item.type === 'contextCompaction' && item.status === 'inProgress')
+      const lastEventAt = items.findLast(item => item.turnId === active.id && item.timestamp)?.timestamp || positive(active.startedAt) && Number(active.startedAt) * 1000 || Date.now()
+      return { stage: compact ? 'compacting' as const : 'working' as const, updatedAt: compact?.timestamp || lastEventAt, lastEventAt }
+    })() : undefined,
     items,
     choicePending: hasPendingChoice(items),
     plan: [], diff: '', tokens: 0, tokenUsageKnown: turns.length === 0, runs,
@@ -96,11 +101,27 @@ export function projectThread(value: unknown): ThreadView {
 
 /** Pure notification fold used by live rendering and recorded protocol tests. */
 export function applyNotification(thread: ThreadView, method: string, params: Record<string, unknown>): ThreadView {
-  const result = { ...thread, updatedAt: Date.now() / 1000 }
+  const now = Date.now()
+  const incomingTurn = string(params.turnId) || string(record(params.turn).id)
+  // Late terminal events from an older turn must not stop a newer submission.
+  if (['turn/completed', 'error'].includes(method) && thread.turnId && incomingTurn && incomingTurn !== thread.turnId) return thread
+  const latestRun = thread.runs?.at(-1)
+  if (['turn/completed', 'error'].includes(method) && !thread.turnId && incomingTurn && latestRun && incomingTurn !== latestRun.id) return thread
+  if (method === 'error' && !thread.turnId && incomingTurn === latestRun?.id && latestRun?.status !== 'inProgress') return thread
+  const currentEvent = Boolean(thread.turnId && (!incomingTurn || incomingTurn === thread.turnId))
+  const result = { ...thread, updatedAt: now / 1000 }
+  const working = (stage: 'working' | 'compacting' = 'working') => {
+    if (!currentEvent) return
+    result.progress = { stage, updatedAt: thread.progress?.stage === stage ? thread.progress.updatedAt : now, lastEventAt: now }
+    // A real output/progress event establishes recovery; old retry messages
+    // must not remain visible throughout the rest of a successful turn.
+    if (thread.progress?.stage === 'retrying') result.error = null
+  }
   if (method === 'turn/started') {
     result.choicePending = false
     result.status = 'inProgress'; result.turnId = string(record(params.turn).id)
     result.error = null; result.plan = []; result.diff = ''
+    result.progress = { stage: 'working', updatedAt: now, lastEventAt: now }
     const run = projectRun(params.turn)
     if (!run.startedAt) { run.startedAt = Date.now(); run.observed = true }
     if (thread.tokenUsageKnown) run.tokenBase = thread.tokens
@@ -109,15 +130,31 @@ export function applyNotification(thread: ThreadView, method: string, params: Re
     const turn = record(params.turn)
     result.status = turn.status === 'completed' ? 'completed' : turn.status === 'interrupted' ? 'interrupted' : 'failed'
     result.turnId = null
+    result.progress = undefined
     result.choicePending = turn.status === 'completed' && hasPendingChoice(result.items)
-    result.error = turn.error ? string(record(turn.error).message) : null
+    result.error = turn.error ? string(record(turn.error).message) : result.status === 'failed' ? thread.error : null
     const raw = projectRun(turn); const previous = thread.runs?.find(value => value.id === raw.id)
     const completedAt = raw.completedAt || Date.now(); const startedAt = raw.startedAt || previous?.startedAt
     const run = { ...previous, ...raw, completedAt, ...(startedAt ? { startedAt, durationMs: raw.durationMs ?? Math.max(0, completedAt - startedAt) } : {}) }
     result.runs = [...(thread.runs || []).filter(value => value.id !== run.id), run]
+    result.items = thread.items.map(item => item.turnId === raw.id && item.status === 'inProgress' ? { ...item, status: result.status } : item)
   } else if (method === 'error') {
     result.error = string(record(params.error).message) || 'Codex 执行出错'
-    if (params.willRetry !== true) result.status = 'failed'
+    if (params.willRetry === true) {
+      if (!thread.turnId || thread.status !== 'inProgress') return thread
+      const details = string(record(params.error).additionalDetails)
+      result.progress = { stage: 'retrying', message: [result.error, details].filter(Boolean).join('\n').slice(0, 4000), updatedAt: now, lastEventAt: now,
+        attempt: (thread.progress?.stage === 'retrying' ? thread.progress.attempt || 0 : 0) + 1 }
+      result.error = null
+    } else {
+      result.status = 'failed'; result.turnId = null; result.progress = undefined; result.choicePending = false
+      result.runs = thread.runs?.map(run => run.id === (incomingTurn || thread.turnId) ? { ...run, status: 'failed', completedAt: now, ...(run.startedAt ? { durationMs: Math.max(0, now - run.startedAt) } : {}) } : run)
+      result.items = thread.items.map(item => item.turnId === (incomingTurn || thread.turnId) && item.status === 'inProgress' ? { ...item, status: 'failed' } : item)
+    }
+  } else if (method === 'thread/compacted') {
+    if (!currentEvent) return thread
+    working()
+    result.items = thread.items.map(item => item.turnId === thread.turnId && item.type === 'contextCompaction' && item.status === 'inProgress' ? { ...item, status: 'completed' } : item)
   } else if (method === 'thread/name/updated') {
     result.title = string(params.threadName) || string(params.name) || result.title
   } else if (method === 'turn/diff/updated') {
@@ -143,13 +180,18 @@ export function applyNotification(thread: ThreadView, method: string, params: Re
     if (method === 'item/completed' && item.type === 'reasoning' && !item.text && existing !== -1) {
       item.text = result.items[existing].text; item.summaryParts = result.items[existing].summaryParts
     }
-    if (['reasoning', 'plan'].includes(item.type)) item.status = method === 'item/started' ? 'inProgress' : 'completed'
+    if (['reasoning', 'plan', 'contextCompaction'].includes(item.type)) item.status = method === 'item/started' ? 'inProgress' : 'completed'
+    // Background completion of a tool isn't evidence that a failed model
+    // connection has recovered. Keep retrying until model output resumes.
+    if (item.type === 'contextCompaction') working(method === 'item/started' ? 'compacting' : 'working')
+    else if (thread.progress?.stage !== 'retrying' || method === 'item/started' || ['agentMessage', 'reasoning', 'plan'].includes(item.type)) working()
     result.items = [...result.items]
     if (existing === -1) result.items.push(item)
     else result.items[existing] = item
     if (['agentMessage', 'userMessage'].includes(item.type)) result.choicePending = hasPendingChoice(result.items)
     if (item.type === 'userMessage' && result.title === '新会话') result.title = item.text.slice(0, 80)
   } else if (['item/agentMessage/delta', 'item/commandExecution/outputDelta', 'item/reasoning/summaryTextDelta', 'item/plan/delta'].includes(method)) {
+    if (thread.progress?.stage !== 'retrying' || method !== 'item/commandExecution/outputDelta') working()
     const id = string(params.itemId)
     const index = result.items.findIndex(item => item.id === id)
     const type = method.includes('commandExecution') ? 'commandExecution' : method.includes('reasoning') ? 'reasoning' : method.includes('/plan/') ? 'plan' : 'agentMessage'

@@ -34,12 +34,32 @@ try{
  await page.locator('form.composer [data-variant="underline"]').waitFor()
  const first=await elapsed();assert.ok(first>=87);await until(async()=>await elapsed()>first,'Elapsed time does not update')
 
- // Reproduce the report: reading above freezes the transcript window while
- // fresh agent output arrives. The timer must remain visible outside it.
+ // Fresh output is appended while reading above. Preserve the reader's row
+ // and scroll position, with the live timer outside the history window.
  const viewport=page.locator('.conversation');const bounds=await viewport.boundingBox();await page.mouse.move(bounds.x+70,bounds.y+140);await page.mouse.wheel(0,-900)
  await page.getByRole('button',{name:'回到底部',exact:true}).waitFor()
+ await viewport.evaluate(async node=>{
+  let top=node.scrollTop,stable=0
+  for(let frame=0;frame<60&&stable<4;frame++){
+   await new Promise(requestAnimationFrame)
+   const next=node.scrollTop;stable=Math.abs(next-top)<1?stable+1:0;top=next
+  }
+ })
+ const reading=await viewport.evaluate(node=>{
+  const top=node.getBoundingClientRect().top
+  const row=[...node.querySelectorAll('.transcript [data-message-id]')].find(row=>row.getBoundingClientRect().bottom>top+1)
+  return {top:node.scrollTop,id:row?.dataset.messageId,rowTop:row?row.getBoundingClientRect().top-top:null}
+ })
+ assert.ok(reading.id,'The fixture has no visible reading anchor')
  await rpc.call('test/append',{threadId:id,text:'继续处理，阅读位置保持不变。'})
- await page.getByRole('button',{name:/显示较新的消息/}).waitFor()
+ await page.locator('.agent-commentary').filter({hasText:'继续处理，阅读位置保持不变。'}).waitFor({state:'attached'})
+ assert.equal(await page.getByRole('button',{name:/显示较新的消息/}).count(),0,'Live output must not require a manual refresh')
+ const afterReading=await viewport.evaluate((node,id)=>{
+  const row=node.querySelector(`[data-message-id="${CSS.escape(id)}"]`)
+  return {top:node.scrollTop,rowTop:row?row.getBoundingClientRect().top-node.getBoundingClientRect().top:null}
+ },reading.id)
+ assert.ok(afterReading.rowTop!==null&&Math.abs(afterReading.rowTop-reading.rowTop)<3,JSON.stringify({reading,afterReading}))
+ assert.ok(Math.abs(afterReading.top-reading.top)<3,JSON.stringify({reading,afterReading}))
  assert.ok(await timerVisible(),'Reading earlier messages removed or covered the running timer')
  await page.screenshot({path:resolve(output,'run-ui-reading-timer.png'),fullPage:true})
  const countBefore=await page.locator('.transcript article').count()
@@ -89,7 +109,7 @@ try{
  await direct.reload();await direct.getByText('本地引擎已连接',{exact:true}).waitFor();assert.equal(await direct.locator('.settings-dialog[open]').count(),0)
  assert.equal(await messageCalls(),directCalls);await direct.close()
  assert.deepEqual(errors,[])
- await writeFile(resolve(output,'run-ui-validation.json'),JSON.stringify({liveTimerVisibleWhileReading:true,historyWindowFrozen:true,refreshPreservesStart:true,transcriptMutations:0,styles:choices.map(row=>row[1]),localSelection:true,rememberedSelection:true,crossTabSync:true,reducedMotion:true,animationsSwitch:true,genuiOpensLocally:true,directPreviewEntry:true,entryClearedAfterOpen:true,mobile:true,finalSummaryRetained:true},null,2))
- console.log('Run UI checks passed: sticky elapsed time while reading/frozen history, refresh, isolated ticks, five live styles, persistence, cross-tab sync, motion controls, local GenUI entry and mobile.')
+ await writeFile(resolve(output,'run-ui-validation.json'),JSON.stringify({liveTimerVisibleWhileReading:true,historyWindowPreserved:true,liveOutputAutomaticallyAppended:true,refreshPreservesStart:true,transcriptMutations:0,styles:choices.map(row=>row[1]),localSelection:true,rememberedSelection:true,crossTabSync:true,reducedMotion:true,animationsSwitch:true,genuiOpensLocally:true,directPreviewEntry:true,entryClearedAfterOpen:true,mobile:true,finalSummaryRetained:true},null,2))
+ console.log('Run UI checks passed: sticky elapsed time while preserving reading position and appending live output, refresh, isolated ticks, five live styles, persistence, cross-tab sync, motion controls, local GenUI entry and mobile.')
 }catch(error){await page.screenshot({path:resolve(output,'run-ui-failure.png'),fullPage:true}).catch(()=>{});console.log(JSON.stringify({errors,error:String(error)}));throw error}
 finally{await browser.close();await app.close();await rm(root,{recursive:true,force:true})}

@@ -61,6 +61,11 @@ export class Bridge extends EventEmitter {
   private quotaPending = new Map<string, QuotaSnapshot>()
   private quotaStarts = new Map<string, QuotaSnapshot>()
   private metadataWrites = new Set<Promise<void>>()
+  private reconciliationTimer?: ReturnType<typeof setTimeout>
+  private reconciling = new Map<string, Promise<ThreadView | undefined>>()
+  private reconciledAt = new Map<string, number>()
+  private reconciliationEpoch = 0
+  private disposed = false
 
   constructor(rpc: CodexRpc, workspace: Workspace | WorkspaceCatalog, codexHome: string, dataDirectory = dirname(codexHome), sharedHistory = false) {
     super(); this.rpc = rpc; this.codexHome = codexHome; this.dataDirectory = dataDirectory; this.sharedHistory = sharedHistory
@@ -75,6 +80,9 @@ export class Bridge extends EventEmitter {
     rpc.on('request', message => this.request(record(message)))
     rpc.on('status', runtime => this.publish({ type: 'runtime', runtime }))
     rpc.on('disconnected', () => {
+      this.reconciliationEpoch++
+      if (this.reconciliationTimer) clearTimeout(this.reconciliationTimer)
+      this.reconciliationTimer = undefined; this.reconciling.clear(); this.reconciledAt.clear()
       this.modePresets = null
       this.loaded.clear(); this.pending.clear(); this.ownedTurns.clear(); this.fresh.clear(); this.sent.clear(); this.reading.clear(); this.readAt.clear(); this.todoMcpThreads.clear(); this.todoLinksActive.clear(); this.listReadAt = 0
       this.publish({ type: 'approvals', approvals: [] })
@@ -340,10 +348,115 @@ export class Bridge extends EventEmitter {
   list(): ThreadSummary[] { return [...this.summaries.values()].sort((a, b) => b.updatedAt - a.updatedAt) }
   snapshot(id: string) { return this.sent.get(id) }
 
+  /** Check only the native current turn. Silence, idle and notLoaded are never
+   * evidence that a turn finished, and no recovery path starts/stops work. */
+  async reconcile(id: string, force = false): Promise<ThreadView | undefined> {
+    const pending = this.reconciling.get(id)
+    if (pending) return pending
+    const before = this.threads.get(id)
+    if (this.disposed || this.rpc.status.state !== 'ready' || !before?.turnId || before.status !== 'inProgress') return before
+    if (!force && this.reconciledAt.has(id) && Date.now() - this.reconciledAt.get(id)! < 15_000) return before
+    this.reconciledAt.set(id, Date.now())
+    const epoch = this.reconciliationEpoch; const revision = before.revision; const turnId = before.turnId
+    const current = () => !this.disposed && this.reconciliationEpoch === epoch && this.threads.get(id)?.turnId === turnId && this.threads.get(id)?.revision === revision
+    const operation = (async () => {
+      try {
+        const raw = record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false })).thread)
+        if (!current()) return this.threads.get(id)
+        let turn: Record<string, unknown> | undefined
+        if (raw.historyMode === 'legacy') {
+          // Legacy CLI history has no per-turn pagination. Only use its full
+          // snapshot when native execution is no longer active.
+          if (record(raw.status).type === 'active') return this.threads.get(id)
+          const legacy = record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: true })).thread)
+          turn = array(legacy.turns).map(record).find(value => value.id === turnId)
+        } else {
+          let cursor: string | undefined
+          for (let page = 0; page < 2 && current(); page++) {
+            const params = { threadId: id, limit: 4, sortDirection: 'desc', ...(cursor ? { cursor } : {}) }
+            const result = record(await this.rpc.call('thread/turns/list', { ...params, itemsView: 'summary' }))
+            const turns = array(result.data).map(record)
+            // Another native turn may have started without its notification.
+            // Never retire the old projection and accidentally drain its queue
+            // over a different running native turn.
+            if (turns.some(value => value.id !== turnId && value.status === 'inProgress')) return this.threads.get(id)
+            turn = turns.find(value => value.id === turnId)
+            if (turn) {
+              if (['completed', 'failed', 'interrupted'].includes(string(turn.status))) {
+                const full = record(await this.rpc.call('thread/turns/list', { ...params, itemsView: 'full' }))
+                const fullTurns = array(full.data).map(record)
+                if (fullTurns.some(value => value.id !== turnId && value.status === 'inProgress')) return this.threads.get(id)
+                turn = fullTurns.find(value => value.id === turnId)
+              }
+              break
+            }
+            const next = string(result.nextCursor)
+            if (!next || next === cursor) break
+            cursor = next
+          }
+        }
+        if (!current() || !turn || !['completed', 'failed', 'interrupted'].includes(string(turn.status))) return this.threads.get(id)
+        // Replace only this turn's native items. Keep other turns, local runtime
+        // metadata and observed timestamps; a revision change invalidates this
+        // entire read rather than overwriting a newer streaming notification.
+        const native = projectThread({ ...raw, turns: [turn] })
+        const known = new Map(before.items.map(item => [item.id, item]))
+        const recovered = native.items.map(item => {
+          const old = known.get(item.id)
+          if (!item.timestamp && old?.timestamp) { item.timestamp = old.timestamp; item.timeSource = old.timeSource }
+          return old && JSON.stringify(old) === JSON.stringify(item) ? old : item
+        })
+        const first = before.items.findIndex(item => item.turnId === turnId)
+        const items = before.items.filter(item => item.turnId !== turnId)
+        items.splice(first < 0 ? items.length : first, 0, ...recovered)
+        const next = applyNotification({ ...before, items }, 'turn/completed', { turn, threadId: id })
+        this.changed(next); this.settleTurn(next, turnId, string(turn.status))
+        return next
+      } catch { return this.threads.get(id) }
+    })().finally(() => { if (this.reconciling.get(id) === operation) this.reconciling.delete(id) })
+    this.reconciling.set(id, operation)
+    return operation
+  }
+
+  async reconcileActive(force = false) {
+    await Promise.allSettled([...this.threads.values()].filter(thread => thread.turnId && thread.status === 'inProgress').map(thread => this.reconcile(thread.id, force)))
+  }
+
+  private scheduleReconciliation() {
+    if (this.disposed || this.reconciliationTimer || this.rpc.status.state !== 'ready' || ![...this.threads.values()].some(thread => thread.turnId && thread.status === 'inProgress')) return
+    this.reconciliationTimer = setTimeout(() => {
+      this.reconciliationTimer = undefined
+      void this.reconcileActive().finally(() => this.scheduleReconciliation())
+    }, 15_000)
+    this.reconciliationTimer.unref()
+  }
+
+  /** One idempotent settlement path for a native event or read-only recovery. */
+  private settleTurn(thread: ThreadView, turnId: string, status: string) {
+    if (!turnId || this.threads.get(thread.id)?.turnId) return
+    this.saveRunMetadata(thread, turnId)
+    this.ownedTurns.delete(thread.id); this.todoLinksActive.delete(thread.id)
+    for (const [key, request] of this.pending) if (request.approval.threadId === thread.id && (!request.approval.turnId || request.approval.turnId === turnId)) this.pending.delete(key)
+    this.publish({ type: 'approvals', approvals: this.approvals() })
+    if (status === 'failed') {
+      let paused = false
+      for (const row of this.queued) if (row.threadId === thread.id && !row.error) { row.error = '前一任务失败，点击重试继续'; paused = true }
+      if (paused) this.publish({ type: 'queue', queue: this.queue() })
+    }
+    const last = thread.items.filter(item => item.type === 'agentMessage').at(-1)
+    if (last?.text.includes('dsh-ui')) void this.genui.capture(thread.id, last.text).then(panels => { if (panels.length) this.publish({ type: 'genui', threadId: thread.id, panels }) }).catch(() => {})
+    if (status === 'completed') this.drainQueue(thread.id)
+    if (this.sharedHistory) {
+      const timer = setTimeout(() => { if (!this.disposed) void this.release(thread.id).catch(() => {}) }, 500)
+      timer.unref()
+    }
+  }
+
   private changed(thread: ThreadView) {
     thread.revision = (this.revisions.get(thread.id) || 0) + 1
     this.revisions.set(thread.id, thread.revision)
     this.threads.set(thread.id, thread)
+    this.scheduleReconciliation()
     this.summaries.set(thread.id, { id: thread.id, title: thread.title, cwd: thread.cwd, updatedAt: thread.updatedAt, status: thread.status, attention: thread.choicePending || this.approvals().some(approval => approval.threadId === thread.id) })
     // State is already committed; this timer only batches browser paint notifications.
     if (!this.renderTimers.has(thread.id)) this.renderTimers.set(thread.id, setTimeout(() => {
@@ -380,7 +493,7 @@ export class Bridge extends EventEmitter {
         efforts: array(model.supportedReasoningEfforts).map(value => string(record(value).reasoningEffort)) }
     }) : []
     const account = accountResult.status === 'fulfilled' ? record(record(accountResult.value).account) : {}
-    return { capabilities: { fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
+    return { capabilities: { fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
       account: string(account.type) || '未检测到登录；自定义供应商可使用环境变量', threads: this.list() }
   }
 
@@ -450,7 +563,7 @@ export class Bridge extends EventEmitter {
     const externalOwner = await this.owner(id)
     if (activate && externalOwner) await this.assertAvailable(id)
     const known = this.threads.get(id)
-    if (known && this.loaded.has(id) && !externalOwner && (!this.rpc.sharedEngine || this.ownedTurns.has(id) || this.fresh.has(id))) return known
+    if (known && this.loaded.has(id) && !externalOwner && (!this.rpc.sharedEngine || this.ownedTurns.has(id) || this.fresh.has(id))) return await this.reconcile(id) || known
     if (!activate) {
       const pending = this.reading.get(id)
       if (pending) return pending
@@ -695,6 +808,24 @@ export class Bridge extends EventEmitter {
     }
     const thread = this.threads.get(id)
     if (!thread) return
+    const eventTurn = method === 'turn/completed' ? string(record(params.turn).id) : method === 'error' ? string(params.turnId) : ''
+    if (eventTurn && thread.turnId && thread.turnId !== eventTurn) return
+    if (eventTurn && !thread.turnId) {
+      const latest = thread.runs?.at(-1)
+      if (!latest || latest.id !== eventTurn) return
+      if (latest.status !== 'inProgress') {
+        if (method !== 'turn/completed' || !['completed', 'failed', 'interrupted'].includes(string(record(params.turn).status))) return
+        // A permanent error can settle a turn before its final native metadata
+        // arrives. Enrich that same latest run without settling/draining again.
+        const turn = record(params.turn)
+        const next = applyNotification(thread, method, { ...params, turn: { ...turn,
+          startedAt: turn.startedAt ?? (latest.startedAt ? latest.startedAt / 1000 : null),
+          completedAt: turn.completedAt ?? (latest.completedAt ? latest.completedAt / 1000 : null),
+          durationMs: turn.durationMs ?? latest.durationMs,
+        } })
+        this.changed(next); this.saveRunMetadata(next, eventTurn); return
+      }
+    }
     const next = applyNotification(thread, method, params)
     if (next !== thread) this.changed(next)
     if (method === 'thread/tokenUsage/updated' && next.runs?.some(run => run.id === params.turnId && run.status !== 'inProgress')) this.saveRunMetadata(next, string(params.turnId))
@@ -702,20 +833,8 @@ export class Bridge extends EventEmitter {
       const quota = this.quotaPending.get(id); this.quotaPending.delete(id)
       if (quota) this.quotaStarts.set(`${id}:${string(record(params.turn).id)}`, quota)
     }
-    if (method === 'turn/completed') {
-      this.saveRunMetadata(next, string(record(params.turn).id))
-      this.ownedTurns.delete(id)
-      this.todoLinksActive.delete(id)
-      for (const [key, request] of this.pending) if (request.approval.threadId === id) this.pending.delete(key)
-      this.publish({ type: 'approvals', approvals: this.approvals() })
-      const last = thread.items.filter(item => item.type === 'agentMessage').at(-1)
-      if (last?.text.includes('dsh-ui')) void this.genui.capture(id, last.text).then(panels => { if (panels.length) this.publish({ type: 'genui', threadId: id, panels }) }).catch(() => {})
-      if (record(params.turn).status === 'completed') this.drainQueue(id)
-      if (this.sharedHistory) {
-        const timer = setTimeout(() => { void this.release(id).catch(() => {}) }, 500)
-        timer.unref()
-      }
-    }
+    if (method === 'turn/completed') this.settleTurn(next, string(record(params.turn).id), string(record(params.turn).status))
+    else if (method === 'error' && params.willRetry !== true && thread.turnId && !next.turnId) this.settleTurn(next, thread.turnId, 'failed')
   }
 
   private request(message: Record<string, unknown>) {
@@ -765,6 +884,9 @@ export class Bridge extends EventEmitter {
   }
 
   async dispose() {
+    this.disposed = true; this.reconciliationEpoch++
+    if (this.reconciliationTimer) clearTimeout(this.reconciliationTimer)
+    this.reconciliationTimer = undefined; this.reconciling.clear(); this.reconciledAt.clear()
     await Promise.all([...this.metadataWrites])
     await this.metrics.flush()
     await this.rpc.dispose()

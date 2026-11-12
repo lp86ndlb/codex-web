@@ -3,6 +3,25 @@ import { Clock3 } from 'lucide-react'
 import type { RunMetrics, ThreadView } from '../shared/types.ts'
 import { activityTitle } from './components.tsx'
 
+export function isThreadRunning(thread?: ThreadView) {
+  return Boolean(thread?.turnId && !['completed', 'failed', 'interrupted'].includes(thread.status))
+}
+
+/** Older running servers expose compaction as a native item without a status.
+ * Only inspect this turn's explicit compaction timestamps, never old history. */
+export function runStage(thread?: ThreadView): 'working' | 'compacting' | 'retrying' {
+  if (!isThreadRunning(thread)) return 'working'
+  if (thread?.progress) return thread.progress.stage
+  const item = thread?.items.findLast(item => item.turnId === thread.turnId && item.type === 'contextCompaction')
+  if (!item || ['completed', 'failed', 'interrupted'].includes(item.status)) return 'working'
+  if (item.status === 'inProgress') return 'compacting'
+  try {
+    const value = JSON.parse(item.text)
+    if (typeof value.startedAtMs === 'number' && Number.isFinite(value.startedAtMs) && value.startedAtMs > 0 && value.completedAtMs == null) return 'compacting'
+  } catch { /* Raw details remain available in the transcript. */ }
+  return 'working'
+}
+
 function elapsedText(milliseconds: number) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000))
   const minutes = Math.floor(seconds / 60)
@@ -31,10 +50,24 @@ export function RunTimer({ run, fallbackStartedAt }: { run?: RunMetrics; fallbac
 
 /** Keep live status in the sticky input area, independent of the history window. */
 export const RunStatus = memo(function RunStatus({ thread, approvals }: { thread?: ThreadView; approvals: number }) {
-  if (!thread?.turnId) return null
+  const [now, setNow] = useState(Date.now)
+  const running = isThreadRunning(thread)
+  useEffect(() => {
+    if (!running) return
+    const sync = () => { if (!document.hidden) setNow(Date.now()) }
+    const timer = setInterval(sync, 5000)
+    document.addEventListener('visibilitychange', sync); sync()
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', sync) }
+  }, [running, thread?.turnId])
+  if (!running || !thread?.turnId) return null
   const run = thread.runs?.find(run => run.id === thread.turnId)
   const fallback = thread.items.find(item => item.turnId === thread.turnId && item.timestamp)?.timestamp
-  const activity = thread.items.findLast(item => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(item.type) && item.status === 'inProgress')
-  const label = approvals ? '等待你的确认' : activity ? activityTitle(activity) : thread.choicePending ? '有问题待回复' : '正在处理'
-  return <div className="working composer-run-status" role="group" aria-label="本轮运行状态"><span className="working-dots" aria-hidden="true"><i /><i /><i /></span><span className="working-label" title={label}>{label}</span><RunTimer key={thread.turnId} run={run} fallbackStartedAt={fallback} /></div>
+  const stage = runStage(thread)
+  const activity = thread.items.findLast(item => item.turnId === thread.turnId && ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(item.type) && item.status === 'inProgress')
+  const lastEventAt = thread.progress?.lastEventAt || Math.max(thread.updatedAt * 1000, fallback || 0)
+  const waiting = !approvals && !thread.choicePending && lastEventAt > 0 && now - lastEventAt >= 90_000
+  const attempt = thread.progress?.attempt
+  const label = approvals ? '等待你的确认' : thread.choicePending ? '有问题待回复' : stage === 'compacting' ? '正在压缩上下文' : stage === 'retrying' ? '模型请求重试中' : activity ? activityTitle(activity) : '正在处理'
+  const detail = approvals || thread.choicePending ? '' : waiting ? '较长时间未收到新进展，等待状态更新' : stage === 'compacting' ? '正在整理历史记录，完成后继续处理' : stage === 'retrying' ? `等待 CLI 恢复模型响应${attempt ? ` · 第 ${attempt} 次重试` : ''}` : ''
+  return <div className="working composer-run-status" data-stage={stage} data-waiting={waiting || undefined} role="group" aria-label="本轮运行状态"><span className="working-dots" aria-hidden="true"><i /><i /><i /></span><span className="working-label" title={thread.progress?.message || label}>{label}</span><RunTimer key={thread.turnId} run={run} fallbackStartedAt={fallback} />{detail && <span className="run-progress-detail" title={thread.progress?.message || detail}>{detail}</span>}</div>
 })

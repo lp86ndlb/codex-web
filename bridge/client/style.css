@@ -155,9 +155,11 @@ details[open] > summary .disclosure { transform: rotate(90deg); }
 .working-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-timer { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; color: var(--ink-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .run-timer svg { opacity: .65; }
-.composer-run-status.working { padding: 0 2px; margin: 0 0 7px; min-height: 22px; gap: 9px; }
+.composer-run-status.working { padding: 0 2px; margin: 0 0 7px; min-height: 22px; column-gap: 9px; row-gap: 3px; flex-wrap: wrap; }
 .composer-run-status .working-label { flex: 0 1 auto; }
 .composer-run-status .run-timer { color: var(--ink); font-size: 13px; font-weight: 500; }
+.run-progress-detail { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .composer-run-status .run-progress-detail { flex-basis: 100%; padding-left: 22px; } }
 .working-dots { display: flex; gap: 3px; flex-shrink: 0; --signal-lift: -2.5px; }
 .working-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--muted); opacity: .65; animation: composer-signal-dot 1.6s cubic-bezier(.4,0,.2,1) infinite both; }
 .working-dots i:nth-child(2) { animation-delay: .16s; }
