@@ -1,15 +1,17 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
-import { ArrowUpRight, ChevronDown, Folder, GripVertical, MessageSquare, Pencil, Plus } from 'lucide-react'
+import { ArrowUpRight, ChevronDown, Folder, GripVertical, MessageSquare, MoreHorizontal, Pencil, Plus } from 'lucide-react'
 import type { Approval, ThreadSummary, ThreadView, WorkspaceInfo } from '../shared/types.ts'
 import { appendNavigation, moveNavigation, navigationKey, orderedNavigation, readNavigation, threadReadEvent, unreadCompletion } from '../shared/navigation-order.ts'
 import { IconButton } from './components.tsx'
 import { StateDot } from './dsh/StateDot.tsx'
+import type { ThreadMenuTarget } from './ThreadMenu.tsx'
 export function workspaceFor(workspaces: WorkspaceInfo[], path: string) {
   return workspaces.filter(row => path === row.path || path.startsWith(row.path.replace(/\/$/, '') + '/')).sort((a, b) => b.path.length - a.path.length)[0]
 }
 interface GroupProps {
   workspaces: WorkspaceInfo[]; threads: ThreadSummary[]; selected: string | null; workspaceId?: string; views: Record<string, ThreadView>; approvals: Approval[]; busy: boolean; search: string
   onChoose: (id: string) => void; onNew: (id: string) => void; onRename: (workspace: WorkspaceInfo) => void
+  menuThreadId?: string; onThreadMenu: (target: ThreadMenuTarget, toggle?: boolean) => void
   reveal?: { id: string; seq: number }
 }
 type Drag = { kind: 'workspace' | 'thread'; id: string; scope: string }
@@ -127,11 +129,25 @@ export const WorkspaceGroups = memo(function WorkspaceGroups(p: GroupProps) {
         const status = p.views[row.id]?.status || row.status; const waiting = row.attention || p.views[row.id]?.choicePending || p.approvals.some(approval => approval.threadId === row.id)
         const state = waiting ? 'warning' : status === 'inProgress' ? 'ongoing' : status === 'completed' && unreadCompletion(row, p.views[row.id], layout.read[row.id]) ? 'done' : status === 'failed' ? 'error' : undefined
         const label = waiting ? '等待你的选择' : status === 'inProgress' ? '正在执行' : status === 'completed' ? '任务已完成' : '执行失败'
-        return <button key={row.id} data-thread-id={row.id} data-dragging={dragging?.kind === 'thread' && dragging.id === row.id || undefined} data-drop={drop?.kind === 'thread' && drop.id === row.id ? drop.after ? 'after' : 'before' : undefined} draggable={!p.busy} onDragStart={event => start(event, source)} onDragOver={event => over(event, source)} onDrop={event => dropped(event, source)} onDragEnd={finishDrag} onKeyDown={event => keyboard(event, source)} className={`thread-link ${p.selected === row.id ? 'selected' : ''}`} title={`${row.title} · 拖拽排序，Alt ↑ / ↓ 微调`} disabled={p.busy} onClick={() => { if (!suppressClick.current) p.onChoose(row.id) }}><GripVertical size={12} className="navigation-grip" /><div><span>{row.title}</span></div>{state ? <span className="thread-indicator" role="img" aria-label={label} title={label}><StateDot key={state} state={state} /></span> : <time>{new Date(row.updatedAt * 1000).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</time>}</button>
+        const menuOpen = p.menuThreadId === row.id
+        return <div className="thread-row" key={row.id} data-menu-open={menuOpen || undefined} onContextMenu={event => {
+          event.preventDefault(); event.stopPropagation()
+          const trigger = event.currentTarget.querySelector<HTMLElement>('.thread-link')!
+          p.onThreadMenu({ threadId: row.id, x: event.clientX, y: event.clientY, trigger })
+        }}><button data-thread-id={row.id} data-dragging={dragging?.kind === 'thread' && dragging.id === row.id || undefined} data-drop={drop?.kind === 'thread' && drop.id === row.id ? drop.after ? 'after' : 'before' : undefined} draggable={!p.busy} onDragStart={event => start(event, source)} onDragOver={event => over(event, source)} onDrop={event => dropped(event, source)} onDragEnd={finishDrag} onKeyDown={event => {
+          if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') {
+            event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect()
+            p.onThreadMenu({ threadId: row.id, x: rect.left + 12, y: rect.bottom, trigger: event.currentTarget }); return
+          }
+          keyboard(event, source)
+        }} className={`thread-link ${p.selected === row.id ? 'selected' : ''}`} title={`${row.title} · 右键操作，拖拽排序，Alt ↑ / ↓ 微调`} disabled={p.busy} onClick={() => { if (!suppressClick.current) p.onChoose(row.id) }}><GripVertical size={12} className="navigation-grip" /><div><span>{row.title}</span></div>{state ? <span className="thread-indicator" role="img" aria-label={label} title={label}><StateDot key={state} state={state} /></span> : <time>{new Date(row.updatedAt * 1000).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })}</time>}</button><button type="button" className="thread-more" aria-label={`会话操作：${row.title}`} title="会话操作" aria-haspopup="menu" aria-expanded={menuOpen} onClick={event => {
+          const rect = event.currentTarget.getBoundingClientRect()
+          p.onThreadMenu({ threadId: row.id, x: rect.right, y: rect.bottom, trigger: event.currentTarget }, true)
+        }}><MoreHorizontal size={16} /></button></div>
       })}{matching.length > limit && <button className="group-more" onClick={() => setLimits(old => ({ ...old, [workspace.id]: limit + 25 }))}>更多会话 · {matching.length - limit}</button>}</div></div></div>
     </section>
   })}{!p.workspaces.length && <div className="sidebar-empty">添加一个项目，开始你的第一个会话。</div>}{query && !p.workspaces.some(w => `${w.name} ${w.path}`.toLocaleLowerCase().includes(query)) && !p.threads.some(t => t.title.toLocaleLowerCase().includes(query)) && <div className="sidebar-empty">没有匹配的工作区或会话</div>}</nav>
-}, (a, b) => a.workspaces === b.workspaces && a.threads === b.threads && a.selected === b.selected && a.reveal === b.reveal && a.views[a.reveal?.id || '']?.cwd === b.views[b.reveal?.id || '']?.cwd && a.workspaceId === b.workspaceId && a.busy === b.busy && a.search === b.search && a.approvals === b.approvals && a.threads.every(row => a.views[row.id]?.status === b.views[row.id]?.status && a.views[row.id]?.choicePending === b.views[row.id]?.choicePending))
+}, (a, b) => a.menuThreadId === b.menuThreadId && a.onThreadMenu === b.onThreadMenu && a.workspaces === b.workspaces && a.threads === b.threads && a.selected === b.selected && a.reveal === b.reveal && a.views[a.reveal?.id || '']?.cwd === b.views[b.reveal?.id || '']?.cwd && a.workspaceId === b.workspaceId && a.busy === b.busy && a.search === b.search && a.approvals === b.approvals && a.threads.every(row => a.views[row.id]?.status === b.views[row.id]?.status && a.views[row.id]?.choicePending === b.views[row.id]?.choicePending))
 export function WorkspaceHome({ workspaces, threads, onOpen, onAdd, onThread }: {
   workspaces: WorkspaceInfo[]; threads: ThreadSummary[]; onOpen: (id: string) => void; onAdd: () => void; onThread: (id: string) => void
 }) {

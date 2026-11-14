@@ -34,6 +34,7 @@ import { loadComposerCache, emptyComposerCache, type EditingMessage } from './co
 import { useComposerCache } from './useComposerCache.ts'
 import { NativeActions, type NativeAction } from './NativeActions.tsx'
 import { ConnectionNotice } from './ConnectionPanel.tsx'
+import { ThreadMenu, type ThreadMenuAction, type ThreadMenuTarget } from './ThreadMenu.tsx'
 
 const starters = [
   { icon: <FileSearch size={19} />, title: '读懂这个项目', detail: '梳理结构，找到关键入口', prompt: '请先只读检查这个项目，介绍目录结构、主要技术和运行方式。' },
@@ -115,7 +116,15 @@ export function App() {
   const [inspector, setInspector] = useState(false)
   const [settings, setSettings] = useState(loadingPreviewEntry)
   const [workspaceDialog, setWorkspaceDialog] = useState(false)
-  const [renameDialog, setRenameDialog] = useState(false)
+  const [renameDialog, setRenameDialog] = useState<string | null>(null)
+  const [renameSaving, setRenameSaving] = useState(false)
+  const [threadMenu, setThreadMenu] = useState<ThreadMenuTarget | null>(null)
+  const openThreadMenu = useCallback((target: ThreadMenuTarget, toggle = false) => {
+    setThreadMenu(previous => toggle && previous?.threadId === target.threadId && previous.trigger === target.trigger ? null : target)
+  }, [])
+  const closeThreadMenu = (restoreFocus = false) => { if (restoreFocus) threadMenu?.trigger.focus({ preventScroll: true }); setThreadMenu(null) }
+  useEffect(() => { if (sidebarCollapsed || mobile && !sidebar) setThreadMenu(null) }, [sidebarCollapsed, mobile, sidebar])
+  useEffect(() => { if (threadMenu && !threads.some(row => row.id === threadMenu.threadId)) setThreadMenu(null) }, [threads, threadMenu])
   const [nameDraft, setNameDraft] = useState('')
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([])
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
@@ -179,7 +188,7 @@ export function App() {
   const navigateMessage = useCallback((id: string) => { pauseFollowing(); setHistoryNavigation(true); setJumpTarget({ id, seq: ++jumpSequence.current }) }, [pauseFollowing])
   useEffect(() => { setHistoryNavigation(false); setJumpTarget(null) }, [selected])
   const dialog = useRef<HTMLDialogElement>(null)
-  const dialogExit = useExitAction(() => { setSettings(false); setWorkspaceDialog(false); setRenameDialog(false); setWorkspaceEditing(null); requestAnimationFrame(() => composer.current?.focus()) }, dialog)
+  const dialogExit = useExitAction(() => { setSettings(false); setWorkspaceDialog(false); setRenameDialog(null); setWorkspaceEditing(null); requestAnimationFrame(() => composer.current?.focus()) }, dialog)
   const source = useRef<EventSource | null>(null)
   const thread = selected ? views[selected] : undefined
   const selectedSummary = selected ? threads.find(row => row.id === selected) : undefined
@@ -491,10 +500,10 @@ export function App() {
     if (!text) { setToast('还没有可复制的回复'); return }
     try { await navigator.clipboard.writeText(text); setToast('已复制最新回复') } catch { setError('无法访问剪贴板，请使用回复下方的复制按钮') }
   }
-  async function terminalResume() {
-    if (!selected) return
-    try { await api(`/threads/${encodeURIComponent(selected)}/release`, {}); await navigator.clipboard.writeText(`codex resume ${selected}`); setToast('已复制终端继续命令') }
-    catch (error) { setError(message(error)) }
+  async function terminalResume(id = selected) {
+    if (!id) return
+    try { await api(`/threads/${encodeURIComponent(id)}/release`, {}); await navigator.clipboard.writeText(`codex resume ${id}`); setToast('已复制终端继续命令') }
+    catch (error) { setToast(message(error)) }
   }
   async function selectSkills() {
     try { const result = await api<{ skills: SkillInfo[] }>(`/skills${activeWorkspace ? `?workspace=${encodeURIComponent(activeWorkspace.id)}` : ''}`); setAvailableSkills(result.skills.filter(skill => skill.enabled)); setPalette('skills') }
@@ -711,10 +720,43 @@ export function App() {
     setOptionDrafts(previous => ({ ...previous, [id]: options })); if (selectedRef.current === id) showLatest()
   }
 
-  async function archive() {
-    if (!selected) return
-    try { await api(`/threads/${encodeURIComponent(selected)}/archive`, {}); newThread() }
-    catch (error) { setError(message(error)) }
+  async function archive(id = selected) {
+    if (!id) return
+    const workspace = workspaceFor(workspaces, threads.find(row => row.id === id)?.cwd || '')
+    try {
+      await api(`/threads/${encodeURIComponent(id)}/archive`, {})
+      setThreads(rows => rows.filter(row => row.id !== id))
+      if (selectedRef.current === id) newThread(workspace?.id || null)
+      setToast('会话已归档，可在设置中恢复')
+    } catch (error) { setToast(message(error)) }
+  }
+
+  function renameThread(id: string) {
+    setError(''); setNameDraft(threads.find(row => row.id === id)?.title || viewsRef.current[id]?.title || ''); setRenameDialog(id)
+  }
+  async function saveThreadName() {
+    const id = renameDialog, title = nameDraft.trim()
+    if (!id || !title || renameSaving) return
+    setRenameSaving(true)
+    try {
+      await api(`/threads/${encodeURIComponent(id)}/rename`, { title })
+      setThreads(rows => rows.map(row => row.id === id ? { ...row, title } : row))
+      updateViews(previous => previous[id] ? { ...previous, [id]: { ...previous[id], title } } : previous)
+      closeDialogs()
+    } catch (error) { setError(message(error)) }
+    finally { setRenameSaving(false) }
+  }
+  async function threadMenuAction(id: string, action: ThreadMenuAction) {
+    if (action === 'open') { chooseThread(id); return }
+    if (action === 'rename') { renameThread(id); return }
+    if (action === 'archive') { await archive(id); return }
+    if (action === 'terminal') { await terminalResume(id); return }
+    try {
+      if (action === 'copy-title') { await navigator.clipboard.writeText(threads.find(row => row.id === id)?.title || viewsRef.current[id]?.title || ''); setToast('已复制会话名称') }
+      else if (action === 'fork') {
+        const value = await readThread(id).promise; updateViews(previous => mergeView(previous, value)); setNativeAction({ kind: 'fork', threadId: id })
+      }
+    } catch (error) { setToast(message(error)) }
   }
 
   async function chooseWorkspace() {
@@ -761,6 +803,8 @@ export function App() {
   const resizeSidebar = (width: number) => setSidebarWidth(Math.max(210, Math.min(420, width)))
   function openSidebarNavigation() { setSidebarCollapsed(false); setSidebar(mobile); try { localStorage.setItem('cweb:sidebar-collapsed', 'false') } catch {} }
   function jumpToNotice(id: string) { setSearch(''); chooseThread(id); openSidebarNavigation(); setRevealThread({ id, seq: ++revealSequence.current }) }
+  const menuSummary = threads.find(row => row.id === threadMenu?.threadId), menuView = views[threadMenu?.threadId || '']
+  const menuUnavailable = menuView?.externalOwner ? '会话正在另一端运行，结束后可归档或转到终端' : menuView?.compacting ? '正在压缩上下文，请稍候' : isThreadRunning(menuView) || menuSummary?.status === 'inProgress' ? '任务运行中，结束后可归档或转到终端' : queue.some(row => row.threadId === threadMenu?.threadId) ? '会话还有排队消息，请先处理队列' : ''
   const toggleSidebar = () => { setSidebar(false); setSidebarCollapsed(value => { try { localStorage.setItem('cweb:sidebar-collapsed', String(!value)) } catch {} return !value }) }
   return <FilePreviewProvider workspaceId={activeWorkspace?.id} root={activeWorkspace?.path} cwd={activeCwd}><ChoiceProvider threadId={selected || ''} activeMessageId={activeChoiceMessage} message={thread?.items.find(item => item.id === activeChoiceMessage)} onAnswer={choiceAnswer}><GenuiProvider threadId={selected || ""} enabled={prefs.genui} streaming={running} onAction={genuiAction} onOpen={openGenui}><div onInputCapture={cancelPendingRestore} style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties} className={`app ${sidebarResizing ? 'sidebar-resizing' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${(inspector && activeWorkspace) || genuiOpen ? '' : 'inspector-hidden'}`}>
     <Presence show={sidebar} className="sidebar-backdrop" role="button" tabIndex={0} aria-label="关闭会话列表" onClick={() => setSidebar(false)} onKeyDown={event => { if (['Enter', ' '].includes(event.key)) setSidebar(false) }}>{null}</Presence>
@@ -770,13 +814,13 @@ export function App() {
       <button className={`workspace-picker ${home ? 'active' : ''}`} disabled={busy} onClick={() => newThread(null)}><Folder size={16} /><span>所有工作区</span><span className="workspace-count">{workspaces.length}</span></button>
       <label className="search"><Search size={15} /><input aria-label="搜索会话" placeholder="搜索工作区或会话…" value={search} onChange={event => setSearch(event.target.value)} /></label>
       <div className="section-label">工作区与会话 <IconButton label="添加工作区" onClick={addWorkspaceDialog}><Plus size={15} /></IconButton></div>
-      <WorkspaceGroups workspaceId={activeWorkspace?.id} workspaces={workspaces} threads={threads} views={views} approvals={approvals} selected={selected} reveal={revealThread} busy={busy} search={search} onChoose={chooseThread} onNew={newThread} onRename={workspace => { setWorkspaceEditing(workspace.id); setNameDraft(workspace.name); setWorkspaceDialog(true) }} />
+      <WorkspaceGroups workspaceId={activeWorkspace?.id} workspaces={workspaces} threads={threads} views={views} approvals={approvals} selected={selected} reveal={revealThread} busy={busy} search={search} menuThreadId={threadMenu?.threadId} onThreadMenu={openThreadMenu} onChoose={chooseThread} onNew={newThread} onRename={workspace => { setWorkspaceEditing(workspace.id); setNameDraft(workspace.name); setWorkspaceDialog(true) }} />
       <div className="sidebar-bottom"><button type="button" className="local-status" aria-label="查看连接与诊断" onClick={() => openSettings('connection')}><span className={`status-dot ${connected ? '' : 'offline'}`} /><span>{connected ? '本地引擎已连接' : runtime.state === 'starting' ? '正在连接本地引擎' : '本地引擎未连接'}</span><ShieldCheck size={13} /></button><div className="sidebar-actions"><UsagePopover /><div className="sidebar-utilities"><IconButton label="连接与设置" className="settings-trigger" onClick={() => openSettings('general')}><Settings size={17} /></IconButton><IconButton label={theme === 'light' ? '切换深色主题' : '切换浅色主题'} onClick={() => void updatePreferences({ theme: theme === 'light' ? 'dark' : 'light' }).catch(error => setError(message(error)))}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</IconButton></div></div></div>
       </div><div className="sidebar-resize" role="separator" tabIndex={0} aria-label="调整侧边栏宽度" aria-orientation="vertical" aria-valuemin={210} aria-valuemax={420} aria-valuenow={sidebarWidth} onPointerDown={event => { sidebarDrag.current = true; setSidebarResizing(true); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault() }} onPointerMove={event => { if (sidebarDrag.current) resizeSidebar(event.clientX) }} onPointerUp={event => { sidebarDrag.current = false; setSidebarResizing(false); try { localStorage.setItem('cweb:sidebar-width', String(Math.max(210, Math.min(420, event.clientX)))) } catch {} }} onPointerCancel={() => { sidebarDrag.current = false; setSidebarResizing(false) }} onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const next = Math.max(210, Math.min(420, sidebarWidth + (event.key === 'ArrowRight' ? 10 : -10))); resizeSidebar(next); try { localStorage.setItem('cweb:sidebar-width', String(next)) } catch {} } }} />
     </aside>
 
     <main className={`main ${dropping ? 'dragging-files' : ''}`} ref={main} onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current++; setDropping(true) } }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }} onDragLeave={event => { if (event.dataTransfer.types.includes('Files') && --dragDepth.current <= 0) { dragDepth.current = 0; setDropping(false) } }} onDrop={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current = 0; setDropping(false); void addFiles(Array.from(event.dataTransfer.files)) } }} >
-      <Presence show={dropping} className="file-drop-overlay"><Upload size={32} /><strong>松开以添加附件</strong><span>图片与文件 · 每个不超过 20 MB</span></Presence><header className="topbar"><IconButton label="打开会话列表" className="mobile-menu" onClick={() => setSidebar(true)}><Menu size={18} /></IconButton><IconButton label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} className="desktop-sidebar-toggle" onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</IconButton><div className="breadcrumb"><Folder size={15} /><button className="breadcrumb-home" onClick={() => newThread(null)} disabled={busy}>工作区</button>{!home && <><span className="slash">/</span><span>{activeWorkspace?.name || baseName(activeCwd)}</span><span className="slash">/</span><strong>{thread?.title || selectedSummary?.title || '新会话'}</strong></>}</div><div className="topbar-actions">{prefs.genui && <IconButton label="GenUI 交互面板" onClick={openGenui}><Braces size={17} /></IconButton>}<IconButton label="快捷命令" onClick={() => setPalette('commands')}><Command size={16} /></IconButton>{selected && <>{boot?.capabilities?.nativeActions && <IconButton label="分支与原生审查" onClick={() => setNativeAction({ kind: 'fork', threadId: selected })}><GitBranch size={16} /></IconButton>}<IconButton label="复制终端继续命令" disabled={running || busy} onClick={() => void terminalResume()}><SquareTerminal size={16} /></IconButton><IconButton label="重命名会话" onClick={() => { setNameDraft(thread?.title || ''); setRenameDialog(true) }}><Pencil size={15} /></IconButton><IconButton label="归档会话" onClick={() => void archive()} disabled={running || Boolean(thread?.externalOwner)}><Archive size={15} /></IconButton></>}<span className={`badge local-badge run-badge ${running ? 'is-running' : ''}`} role="status"><span className={`status-dot ${currentApprovals.length || thread?.choicePending ? 'waiting' : thread?.status === 'completed' ? 'complete' : ''}`} />{loadingThread ? '载入中' : currentApprovals.length ? '待确认' : thread?.choicePending ? '待回复' : running ? activeRunStage === 'compacting' ? '压缩中' : activeRunStage === 'retrying' ? '重试中' : '处理中' : thread?.status === 'completed' ? '已完成' : thread?.status === 'failed' ? '已失败' : thread?.status === 'interrupted' ? '已停止' : '本地'}</span><IconButton disabled={!activeWorkspace} label={inspector ? '隐藏工作区面板' : '显示工作区面板'} onClick={toggleInspector}><PanelRight size={17} /></IconButton></div></header>
+      <Presence show={dropping} className="file-drop-overlay"><Upload size={32} /><strong>松开以添加附件</strong><span>图片与文件 · 每个不超过 20 MB</span></Presence><header className="topbar"><IconButton label="打开会话列表" className="mobile-menu" onClick={() => setSidebar(true)}><Menu size={18} /></IconButton><IconButton label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} className="desktop-sidebar-toggle" onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</IconButton><div className="breadcrumb"><Folder size={15} /><button className="breadcrumb-home" onClick={() => newThread(null)} disabled={busy}>工作区</button>{!home && <><span className="slash">/</span><span>{activeWorkspace?.name || baseName(activeCwd)}</span><span className="slash">/</span><strong>{thread?.title || selectedSummary?.title || '新会话'}</strong></>}</div><div className="topbar-actions">{prefs.genui && <IconButton label="GenUI 交互面板" onClick={openGenui}><Braces size={17} /></IconButton>}<IconButton label="快捷命令" onClick={() => setPalette('commands')}><Command size={16} /></IconButton>{selected && <>{boot?.capabilities?.nativeActions && <IconButton label="分支与原生审查" onClick={() => setNativeAction({ kind: 'fork', threadId: selected })}><GitBranch size={16} /></IconButton>}<IconButton label="复制终端继续命令" disabled={running || busy} onClick={() => void terminalResume()}><SquareTerminal size={16} /></IconButton><IconButton label="重命名会话" onClick={() => { if (selected) renameThread(selected) }}><Pencil size={15} /></IconButton><IconButton label="归档会话" onClick={() => void archive()} disabled={running || Boolean(thread?.externalOwner)}><Archive size={15} /></IconButton></>}<span className={`badge local-badge run-badge ${running ? 'is-running' : ''}`} role="status"><span className={`status-dot ${currentApprovals.length || thread?.choicePending ? 'waiting' : thread?.status === 'completed' ? 'complete' : ''}`} />{loadingThread ? '载入中' : currentApprovals.length ? '待确认' : thread?.choicePending ? '待回复' : running ? activeRunStage === 'compacting' ? '压缩中' : activeRunStage === 'retrying' ? '重试中' : '处理中' : thread?.status === 'completed' ? '已完成' : thread?.status === 'failed' ? '已失败' : thread?.status === 'interrupted' ? '已停止' : '本地'}</span><IconButton disabled={!activeWorkspace} label={inspector ? '隐藏工作区面板' : '显示工作区面板'} onClick={toggleInspector}><PanelRight size={17} /></IconButton></div></header>
       <div className="conversation-stage"><div className="conversation" ref={transcript} tabIndex={0} aria-label="会话内容"><div ref={transcriptContent} className="conversation-content">
         {home ? !boot ? <div className="workspace-home workspace-loading" role="status" aria-label="正在加载工作区"><BrandMark size={26} /><p>正在载入工作台…</p><div className="conversation-skeleton" aria-hidden="true"><i /><i /><i /></div></div> : <WorkspaceHome workspaces={workspaces} threads={threads} onOpen={newThread} onAdd={addWorkspaceDialog} onThread={chooseThread} /> : !selected ? pendingMessage ? <div className="transcript"><TranscriptItem item={pendingMessage.item} /></div> : <div className="welcome"><div className="welcome-eyebrow"><span />你的代码，你的工作区</div><h1>让想法，<br /><span>在这里开始。</span></h1><p>与 Codex 一起理解、构建和打磨项目。<br />每一次执行，都在你的本机。</p><div className="starter-grid">{starters.map(starter => <button key={starter.title} className="starter" onClick={() => { setDraft(starter.prompt); requestAnimationFrame(() => composer.current?.focus()) }}><div className="starter-icon">{starter.icon}<ArrowRight size={14} /></div><strong>{starter.title}</strong><span>{starter.detail}</span></button>)}</div><div className="welcome-note"><ShieldCheck size={14} />执行前可审批，过程可查看，随时可停止</div></div>
           : !thread && threadLoadError?.id === selected ? <div className="thread-empty" role="status"><p>会话暂未载入，请重试。</p></div>
@@ -820,13 +864,14 @@ export function App() {
         {workspaceEditing ? <p className="muted">名称用于整理工作区，不会移动项目目录。</p> : <><p className="workspace-dialog-intro">选择一个项目文件夹，接着开始你的会话。</p><DirectoryPicker initialPath={activeWorkspace?.path || workspaces[0]?.path} workspaces={workspaces} onSelect={setDirectoryDraft} disabled={workspaceSaving} /></>}
         <div className="workspace-dialog-details"><label className="field-label">工作区名称{!workspaceEditing && '（可选）'}<input autoFocus={Boolean(workspaceEditing)} value={nameDraft} disabled={workspaceSaving} maxLength={80} onChange={event => setNameDraft(event.target.value)} placeholder="默认使用文件夹名称" /></label>{error && <Notice text={error} />}<div className="dialog-footer"><button type="button" disabled={workspaceSaving} onClick={closeDialogs}>取消</button><button className="primary" type="submit" disabled={workspaceSaving || (workspaceEditing ? !nameDraft.trim() : !directoryDraft)}>{workspaceSaving ? <><LoaderCircle size={15} className="spin" />正在打开…</> : workspaceEditing ? '保存工作区名称' : '打开工作区'}</button></div></div>
       </form>
-        : renameDialog ? <form onSubmit={event => { event.preventDefault(); if (selected) void api(`/threads/${encodeURIComponent(selected)}/rename`, { title: nameDraft }).then(closeDialogs).catch(error => setError(message(error))) }}><label className="field-label">会话名称<input autoFocus value={nameDraft} maxLength={120} onChange={event => setNameDraft(event.target.value)} /></label>{error && <Notice text={error} />}<div className="dialog-footer"><button className="primary" disabled={!nameDraft.trim()}>保存名称</button></div></form>
+        : renameDialog ? <form onSubmit={event => { event.preventDefault(); void saveThreadName() }}><label className="field-label">会话名称<input autoFocus value={nameDraft} maxLength={120} onChange={event => setNameDraft(event.target.value)} /></label>{error && <Notice text={error} />}<div className="dialog-footer"><button className="primary" disabled={renameSaving || !nameDraft.trim()}>{renameSaving ? '正在保存…' : '保存名称'}</button></div></form>
           : settings && <SettingsPanel online={online} runtime={runtime} thread={thread} tab={settingsTab} onTab={tab => { setLoadingFocus(false); setSettingsTab(tab) }} boot={boot} connected={connected} preferences={prefs} onPreferences={updatePreferences} loadingStyle={loadingStyle} onLoadingStyle={changeLoadingStyle} loadingFocus={loadingFocus}
             current={selected ? { title: thread?.title || '当前会话', options: currentOptions, model: thread?.model, tokens: thread?.tokens } : undefined} onCurrent={changeOptions}
             workspaces={workspaces} workspaceId={activeWorkspace?.id} onUseSkill={useSkill} plugin={pluginEnabled} pluginSaving={pluginSaving} onPlugin={enabled => void togglePlugin(enabled)}
             onReconnect={() => setReload(value => value + 1)} onRestored={id => { closeDialogs(); chooseThread(id) }} />}
 
     </dialog>
+    <ThreadMenu target={threadMenu} title={menuSummary?.title || menuView?.title || '会话'} busy={busy} connected={connected} unavailable={menuUnavailable} nativeActions={Boolean(boot?.capabilities?.nativeActions)} onClose={closeThreadMenu} onAction={(id, action) => void threadMenuAction(id, action)} />
     {nativeAction && views[nativeAction.threadId] && <NativeActions key={nativeAction.threadId + ':' + (nativeAction.beforeTurnId || '')} action={nativeAction} thread={views[nativeAction.threadId]} onClose={() => { setNativeAction(null); requestAnimationFrame(() => composer.current?.focus()) }} onComplete={(view, fork) => { if (view) updateViews(previous => mergeView(previous, view)); if (fork && view) chooseThread(view.id); else showLatest() }} />}
     {palette && <CommandPalette title={palette === 'commands' ? '搜索命令…' : palette === 'skills' ? '选择本轮 Skill…' : '搜索输入历史…'}
       items={palette === 'commands' ? commands : palette === 'skills' ? availableSkills.map(skill => ({ id: skill.path, label: skill.name, detail: skill.description })) : history.map((text, index) => ({ id: String(index), label: text }))}
