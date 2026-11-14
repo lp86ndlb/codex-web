@@ -19,7 +19,6 @@ const definition = ({
     const API_ACT = 'todo-note/api/act'
     const PREF_KEY = 'cweb:todo-note:prefs:v1'
     const POLL_VISIBLE = 1200
-    const POLL_HIDDEN = 4000
     const POLL_FAILED = 8000
     const STRIKE_MS = 380
     const noop = () => {}
@@ -574,15 +573,18 @@ const definition = ({
         }
         let alive = true
         let timer = 0
+        let fetching = false
         versionRef.current = -1
         setState({ note: null, status: 'loading', error: '' })
 
         const hidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden'
         const schedule = (delay) => {
-          timer = window.setTimeout(loop, delay)
+          window.clearTimeout(timer)
+          if (alive && !hidden()) timer = window.setTimeout(loop, delay)
         }
         const loop = async () => {
-          if (!alive) return
+          if (!alive || hidden() || fetching) return
+          fetching = true
           try {
             const value = await callApi(API_GET, { sessionId, since: versionRef.current })
             if (!alive) return
@@ -592,7 +594,7 @@ const definition = ({
               versionRef.current = Number(value.version) || 0
               setState({ note: value.note, status: 'ready', error: '' })
             }
-            schedule(hidden() ? POLL_HIDDEN : POLL_VISIBLE)
+            schedule(POLL_VISIBLE)
           } catch (error) {
             if (!alive) return
             setState((previous) => ({
@@ -601,12 +603,13 @@ const definition = ({
               error: String(error?.message || error),
             }))
             schedule(POLL_FAILED)
+          } finally {
+            fetching = false
           }
         }
         const onVisibility = () => {
-          if (hidden()) return
           window.clearTimeout(timer)
-          loop()
+          if (!hidden()) loop()
         }
         loop()
         if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)

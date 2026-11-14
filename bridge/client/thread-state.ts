@@ -13,7 +13,7 @@ export function applyThreadPatch(previous: Record<string, ThreadView>, patch: Th
   const old = previous[patch.id]
   if (!old || old.revision >= patch.revision || old.revision !== patch.baseRevision) return previous
   const changed = new Map(patch.items.map(item => [item.id, item]))
-  const known = new Map(old.items.map(item => [item.id, item]))
-  const items = patch.order ? patch.order.map(id => changed.get(id) || known.get(id)!).filter(Boolean) : old.items.map(item => changed.get(item.id) || item)
+  const known = patch.order ? new Map(old.items.map(item => [item.id, item])) : null
+  const items = patch.order ? patch.order.map(id => changed.get(id) || known!.get(id)!).filter(Boolean) : changed.size ? old.items.map(item => changed.get(item.id) || item) : old.items
   return { ...previous, [patch.id]: { ...old, ...patch.changes, revision: patch.revision, items, choicePending: hasPendingChoice(items) } }
 }

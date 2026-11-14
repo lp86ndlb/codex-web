@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties } from 'react'
+import type { ActivityView } from '../shared/types.ts'
+import { observeActivity, retainThreadViews } from './view-cache.ts'
 import { Archive, ArrowDown, ArrowRight, ArrowUp, Check, ChevronDown, Code2, Command, FileSearch, Folder, GitBranch, Upload, RefreshCw, Braces, SquareTerminal, LoaderCircle, Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Plus, Search, Settings, Settings2, ShieldCheck, Sparkles, Square, Sun, X } from 'lucide-react'
 import { defaultPreferences, type Approval, type Bootstrap, type WorkspaceInfo, type RuntimeStatus, type StreamEvent, type ThreadSummary, type ThreadView, type Preferences, type SessionOptions, type AttachmentInfo, type SkillInfo, type QueuedMessage, type GenuiPanelInfo, type ThreadGoal, type Item } from '../shared/types.ts'
 import { api, message, setToken, upload, ApiError, uncertainSubmission } from './api.ts'
 import { ApprovalStack, IconButton, Notice, TranscriptItem } from './components.tsx'
-import { TodoNote } from './TodoNote.tsx'
 
 import { WorkspaceGroups, WorkspaceHome, workspaceFor } from './Workspaces.tsx'
 import { Inspector } from './Inspector.tsx'
@@ -36,6 +37,11 @@ import { NativeActions, type NativeAction } from './NativeActions.tsx'
 import { ConnectionNotice } from './ConnectionPanel.tsx'
 import { ThreadMenu, type ThreadMenuAction, type ThreadMenuTarget } from './ThreadMenu.tsx'
 
+import { deferredPanel } from './deferred-panel.tsx'
+// Connection/settings remain in the entry module so diagnostics can still open
+// when the bridge becomes unreachable before their first visit.
+const TodoNote = deferredPanel<ComponentProps<typeof import('./TodoNote.tsx')['TodoNote']>>('待办便签', async () => ({ default: (await import('./TodoNote.tsx')).TodoNote }))
+
 const starters = [
   { icon: <FileSearch size={19} />, title: '读懂这个项目', detail: '梳理结构，找到关键入口', prompt: '请先只读检查这个项目，介绍目录结构、主要技术和运行方式。' },
   { icon: <GitBranch size={19} />, title: '检查代码改动', detail: '发现问题，给出修改建议', prompt: '请审查当前工作区的未提交改动，优先找出真实的 bug 和风险，先不要修改文件。' },
@@ -52,6 +58,9 @@ export function App() {
   const [runtime, setRuntime] = useState<RuntimeStatus>({ state: 'starting', error: null })
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [views, setViews] = useState<Record<string, ThreadView>>({})
+  const [activityViews, setActivityViews] = useState<Record<string, ActivityView>>({})
+  const viewInterests = useRef(new Set<string>())
+  const recentViews = useRef<string[]>([])
   const [initialComposer] = useState(() => { try { return loadComposerCache(localStorage) } catch { return emptyComposerCache() } })
   const [draftSaveError, setDraftSaveError] = useState('')
   const [pendingMessages, setPendingMessages] = useState<PendingMessage[]>(initialComposer.pendingMessages)
@@ -60,8 +69,14 @@ export function App() {
   const viewsRef = useRef<Record<string, ThreadView>>({})
   const resyncing = useRef(new Set<string>())
   const updateViews = useCallback((update: (previous: Record<string, ThreadView>) => Record<string, ThreadView>) => {
-    const value = update(viewsRef.current)
-    if (value !== viewsRef.current) { viewsRef.current = value; setViews(value) }
+    const updated = update(viewsRef.current)
+    const added = Object.keys(updated).filter(id => !viewsRef.current[id])
+    const value = retainThreadViews(updated, new Set([...viewInterests.current, ...added]), recentViews.current)
+    if (value !== viewsRef.current) {
+      const changed = Object.values(value).filter(view => view !== viewsRef.current[view.id])
+      setActivityViews(previous => changed.reduce(observeActivity, previous))
+      viewsRef.current = value; setViews(value)
+    }
   }, [])
   const [selected, setSelected] = useState<string | null>(null)
   const pendingRestoreCandidate = useRef<string | null>(null)
@@ -82,6 +97,7 @@ export function App() {
   const serverToken = useRef<string | null>(null)
   const threadReads = useRef(new Map<string, { controller: AbortController; promise: Promise<ThreadView> }>())
   const readThread = useCallback((id: string) => {
+    recentViews.current = [...recentViews.current.filter(value => value !== id), id].slice(-8)
     const previous = threadReads.current.get(id)
     if (previous && !previous.controller.signal.aborted) return previous
     const controller = new AbortController()
@@ -148,7 +164,7 @@ export function App() {
     // This is a one-time entry: reloading after closing settings returns to chat.
     window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
   }, [])
-  const [palette, setPalette] = useState<'commands' | 'skills' | 'history' | null>(null)
+  const [palette, setPalette] = useState<'commands' | 'skills' | 'history' | 'threads' | null>(null)
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([])
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsRevision, setSkillsRevision] = useState(0)
@@ -159,6 +175,8 @@ export function App() {
   const inspectorExit = useExitAction(() => setInspector(false))
   const genuiExit = useExitAction(() => setGenuiOpen(false))
   const selectedRef = useRef<string | null>(null); selectedRef.current = selected
+  viewInterests.current = new Set([selected, nativeAction?.threadId, ...pendingMessages.map(row => row.key)].filter((id): id is string => Boolean(id)))
+  if (selected && recentViews.current.at(-1) !== selected) recentViews.current = [...recentViews.current.filter(id => id !== selected), selected].slice(-8)
   const [handoffBusy, setHandoffBusy] = useState(false)
   const prefWrites = useRef(Promise.resolve()); const pendingPrefs = useRef(0)
   const optionWrites = useRef(Promise.resolve())
@@ -214,7 +232,7 @@ export function App() {
   const todoLinkPending = queue.some(row => row.threadId === selected && row.kind === 'todo-link' && !row.error) || Boolean(running && thread?.items.findLast(item => item.type === 'userMessage')?.text.startsWith('请关联本会话的待办便签：'))
   const currentApprovals = useMemo(() => approvals.filter(approval => approval.threadId === selected), [approvals, selected])
   const connected = runtime.state === 'ready' && streamConnected
-  const { notices, dismiss: dismissNotice } = useThreadNotices(threads, views, approvals, connected, selected)
+  const { notices, dismiss: dismissNotice } = useThreadNotices(threads, activityViews, approvals, connected, selected)
   useEffect(() => { setAvailableSkills([]) }, [activeWorkspace?.id])
   useEffect(() => {
     if (!boot || !activeWorkspace) return
@@ -280,6 +298,7 @@ export function App() {
         // Native projection revisions restart with the HTTP service. Keep the
         // last rendered content while allowing its replacement from revision 0.
         updateViews(previous => Object.fromEntries(Object.entries(previous).map(([id, view]) => [id, { ...view, revision: -1 }])))
+        setActivityViews(previous => Object.fromEntries(Object.entries(previous).map(([id, view]) => [id, { ...view, revision: -1 }])))
       }
       setToken(value.token); setError(''); setBoot(value); setRuntime(value.runtime); setThreads(value.threads)
       if (!pendingPrefs.current) setPrefs(value.preferences || defaultPreferences)
@@ -313,14 +332,21 @@ export function App() {
         if (cancelled) return
         let value: StreamEvent
         try { value = JSON.parse(event.data) as StreamEvent } catch { scheduleReconnect(); return }
-        if (value.type === 'thread') updateViews(previous => mergeView(previous, value.thread))
+        if (value.type === 'thread') {
+          setActivityViews(previous => observeActivity(previous, value.thread))
+          if (viewInterests.current.has(value.thread.id)) updateViews(previous => mergeView(previous, value.thread))
+        }
         else if (value.type === 'threadPatch') {
+          setActivityViews(previous => observeActivity(previous, value))
+          // Other sessions still update badges/questions/notices, but their
+          // command output must not trigger full history reads in this tab.
+          if (!viewInterests.current.has(value.id)) return
           const current = viewsRef.current[value.id]
           if (!current || (current.revision < value.revision && current.revision !== value.baseRevision)) {
             if (!resyncing.current.has(value.id)) {
               resyncing.current.add(value.id)
               const snapshot = current ? api<ThreadView>(`/threads/${encodeURIComponent(value.id)}/snapshot`) : readThread(value.id).promise
-              void snapshot.then(snapshot => { if (!cancelled) updateViews(previous => mergeView(previous, snapshot)) }).catch(() => {}).finally(() => resyncing.current.delete(value.id))
+              void snapshot.then(snapshot => { if (!cancelled && viewInterests.current.has(value.id)) updateViews(previous => mergeView(previous, snapshot)) }).catch(() => {}).finally(() => resyncing.current.delete(value.id))
             }
           } else updateViews(previous => applyThreadPatch(previous, value))
         }
@@ -376,7 +402,8 @@ export function App() {
         else if (historyNavigation) { event.preventDefault(); if (current >= prompts.length - 1) showLatest(); else navigateMessage(prompts[current + 1].id) }
         return
       }
-      if (mod && key === 'k') { event.preventDefault(); requestAnimationFrame(() => composer.current?.focus()) }
+      if (mod && event.altKey && key === 'k') { event.preventDefault(); setPalette('threads') }
+      else if (mod && key === 'k') { event.preventDefault(); requestAnimationFrame(() => composer.current?.focus()) }
       else if (mod && event.shiftKey && key === 'p') { event.preventDefault(); setPalette('commands') }
       else if (mod && key === ',') { event.preventDefault(); openSettings('general') }
       else if (mod && event.altKey && key === 'n') { event.preventDefault(); if (!busy) newThread() }
@@ -553,7 +580,7 @@ export function App() {
     if (id === '/panel') { openGenui(); setInspector(false) }
     else if (id === '/genui') { void api<{ skills: SkillInfo[] }>(`/skills${activeWorkspace ? `?workspace=${encodeURIComponent(activeWorkspace.id)}` : ''}`).then(value => { const skill = value.skills.find(row => row.name === 'genui' && row.enabled); if (skill) useSkill(skill); else setToast('请先在设置中启用 GenUI') }).catch(error => setError(message(error))) }
     else if (id === '/new') newThread()
-    else if (id === '/resume') { newThread(null); openSidebarNavigation(); setTimeout(() => document.querySelector<HTMLInputElement>('[aria-label="搜索会话"]')?.focus(), 0) }
+    else if (id === '/resume') setPalette('threads')
     else if (id === '/folder') addWorkspaceDialog()
     else if (id === '/files') setInspector(true)
     else if (id === '/copy') void copyReply()
@@ -803,8 +830,8 @@ export function App() {
   const resizeSidebar = (width: number) => setSidebarWidth(Math.max(210, Math.min(420, width)))
   function openSidebarNavigation() { setSidebarCollapsed(false); setSidebar(mobile); try { localStorage.setItem('cweb:sidebar-collapsed', 'false') } catch {} }
   function jumpToNotice(id: string) { setSearch(''); chooseThread(id); openSidebarNavigation(); setRevealThread({ id, seq: ++revealSequence.current }) }
-  const menuSummary = threads.find(row => row.id === threadMenu?.threadId), menuView = views[threadMenu?.threadId || '']
-  const menuUnavailable = menuView?.externalOwner ? '会话正在另一端运行，结束后可归档或转到终端' : menuView?.compacting ? '正在压缩上下文，请稍候' : isThreadRunning(menuView) || menuSummary?.status === 'inProgress' ? '任务运行中，结束后可归档或转到终端' : queue.some(row => row.threadId === threadMenu?.threadId) ? '会话还有排队消息，请先处理队列' : ''
+  const menuSummary = threads.find(row => row.id === threadMenu?.threadId), menuView = activityViews[threadMenu?.threadId || '']
+  const menuUnavailable = menuView?.externalOwner ? '会话正在另一端运行，结束后可归档或转到终端' : menuView?.compacting ? '正在压缩上下文，请稍候' : menuView?.status === 'inProgress' || menuSummary?.status === 'inProgress' ? '任务运行中，结束后可归档或转到终端' : queue.some(row => row.threadId === threadMenu?.threadId) ? '会话还有排队消息，请先处理队列' : ''
   const toggleSidebar = () => { setSidebar(false); setSidebarCollapsed(value => { try { localStorage.setItem('cweb:sidebar-collapsed', String(!value)) } catch {} return !value }) }
   return <FilePreviewProvider workspaceId={activeWorkspace?.id} root={activeWorkspace?.path} cwd={activeCwd}><ChoiceProvider threadId={selected || ''} activeMessageId={activeChoiceMessage} message={thread?.items.find(item => item.id === activeChoiceMessage)} onAnswer={choiceAnswer}><GenuiProvider threadId={selected || ""} enabled={prefs.genui} streaming={running} onAction={genuiAction} onOpen={openGenui}><div onInputCapture={cancelPendingRestore} style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties} className={`app ${sidebarResizing ? 'sidebar-resizing' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${(inspector && activeWorkspace) || genuiOpen ? '' : 'inspector-hidden'}`}>
     <Presence show={sidebar} className="sidebar-backdrop" role="button" tabIndex={0} aria-label="关闭会话列表" onClick={() => setSidebar(false)} onKeyDown={event => { if (['Enter', ' '].includes(event.key)) setSidebar(false) }}>{null}</Presence>
@@ -812,9 +839,9 @@ export function App() {
       <div className="brand"><BrandMark size={42} /><div><strong>cweb</strong><span>Codex 工作台</span></div></div>
       <button className="new-thread" onClick={() => newThread()} disabled={busy}><Plus size={17} /><span>新建会话</span><kbd>↵</kbd></button>
       <button className={`workspace-picker ${home ? 'active' : ''}`} disabled={busy} onClick={() => newThread(null)}><Folder size={16} /><span>所有工作区</span><span className="workspace-count">{workspaces.length}</span></button>
-      <label className="search"><Search size={15} /><input aria-label="搜索会话" placeholder="搜索工作区或会话…" value={search} onChange={event => setSearch(event.target.value)} /></label>
+      <div className="search"><button type="button" className="search-switch" aria-label="快速切换会话" title="快速切换会话 · Ctrl / ⌘ Alt K" onClick={() => setPalette('threads')}><Search size={15} /></button><input aria-label="搜索会话" placeholder="搜索工作区或会话…" value={search} onChange={event => setSearch(event.target.value)} /></div>
       <div className="section-label">工作区与会话 <IconButton label="添加工作区" onClick={addWorkspaceDialog}><Plus size={15} /></IconButton></div>
-      <WorkspaceGroups workspaceId={activeWorkspace?.id} workspaces={workspaces} threads={threads} views={views} approvals={approvals} selected={selected} reveal={revealThread} busy={busy} search={search} menuThreadId={threadMenu?.threadId} onThreadMenu={openThreadMenu} onChoose={chooseThread} onNew={newThread} onRename={workspace => { setWorkspaceEditing(workspace.id); setNameDraft(workspace.name); setWorkspaceDialog(true) }} />
+      <WorkspaceGroups workspaceId={activeWorkspace?.id} workspaces={workspaces} threads={threads} views={activityViews} approvals={approvals} selected={selected} reveal={revealThread} busy={busy} search={search} menuThreadId={threadMenu?.threadId} onThreadMenu={openThreadMenu} onChoose={chooseThread} onNew={newThread} onRename={workspace => { setWorkspaceEditing(workspace.id); setNameDraft(workspace.name); setWorkspaceDialog(true) }} />
       <div className="sidebar-bottom"><button type="button" className="local-status" aria-label="查看连接与诊断" onClick={() => openSettings('connection')}><span className={`status-dot ${connected ? '' : 'offline'}`} /><span>{connected ? '本地引擎已连接' : runtime.state === 'starting' ? '正在连接本地引擎' : '本地引擎未连接'}</span><ShieldCheck size={13} /></button><div className="sidebar-actions"><UsagePopover /><div className="sidebar-utilities"><IconButton label="连接与设置" className="settings-trigger" onClick={() => openSettings('general')}><Settings size={17} /></IconButton><IconButton label={theme === 'light' ? '切换深色主题' : '切换浅色主题'} onClick={() => void updatePreferences({ theme: theme === 'light' ? 'dark' : 'light' }).catch(error => setError(message(error)))}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</IconButton></div></div></div>
       </div><div className="sidebar-resize" role="separator" tabIndex={0} aria-label="调整侧边栏宽度" aria-orientation="vertical" aria-valuemin={210} aria-valuemax={420} aria-valuenow={sidebarWidth} onPointerDown={event => { sidebarDrag.current = true; setSidebarResizing(true); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault() }} onPointerMove={event => { if (sidebarDrag.current) resizeSidebar(event.clientX) }} onPointerUp={event => { sidebarDrag.current = false; setSidebarResizing(false); try { localStorage.setItem('cweb:sidebar-width', String(Math.max(210, Math.min(420, event.clientX)))) } catch {} }} onPointerCancel={() => { sidebarDrag.current = false; setSidebarResizing(false) }} onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const next = Math.max(210, Math.min(420, sidebarWidth + (event.key === 'ArrowRight' ? 10 : -10))); resizeSidebar(next); try { localStorage.setItem('cweb:sidebar-width', String(next)) } catch {} } }} />
     </aside>
@@ -873,8 +900,8 @@ export function App() {
     </dialog>
     <ThreadMenu target={threadMenu} title={menuSummary?.title || menuView?.title || '会话'} busy={busy} connected={connected} unavailable={menuUnavailable} nativeActions={Boolean(boot?.capabilities?.nativeActions)} onClose={closeThreadMenu} onAction={(id, action) => void threadMenuAction(id, action)} />
     {nativeAction && views[nativeAction.threadId] && <NativeActions key={nativeAction.threadId + ':' + (nativeAction.beforeTurnId || '')} action={nativeAction} thread={views[nativeAction.threadId]} onClose={() => { setNativeAction(null); requestAnimationFrame(() => composer.current?.focus()) }} onComplete={(view, fork) => { if (view) updateViews(previous => mergeView(previous, view)); if (fork && view) chooseThread(view.id); else showLatest() }} />}
-    {palette && <CommandPalette title={palette === 'commands' ? '搜索命令…' : palette === 'skills' ? '选择本轮 Skill…' : '搜索输入历史…'}
-      items={palette === 'commands' ? commands : palette === 'skills' ? availableSkills.map(skill => ({ id: skill.path, label: skill.name, detail: skill.description })) : history.map((text, index) => ({ id: String(index), label: text }))}
-      onClose={() => { setPalette(null); requestAnimationFrame(() => composer.current?.focus()) }} onChoose={id => { if (palette === 'commands') runCommand(id); else if (palette === 'skills') { const skill = availableSkills.find(row => row.path === id); if (skill) useSkill(skill) } else { setDraft(history[Number(id)]); setPalette(null); requestAnimationFrame(() => composer.current?.focus()) } }} />}
+    {palette && <CommandPalette key={palette} stableOrder={palette === 'threads'} title={palette === 'commands' ? '搜索命令…' : palette === 'skills' ? '选择本轮 Skill…' : palette === 'threads' ? '快速切换会话' : '搜索输入历史…'}
+      items={palette === 'threads' ? threads.map(row => ({ id: row.id, label: row.title, detail: `${workspaceFor(workspaces, row.cwd)?.name || row.cwd} · ${row.id === selected ? '当前会话' : row.attention ? '待回复' : row.status === 'inProgress' ? '运行中' : row.status === 'failed' ? '执行失败' : '会话'}`, key: row.id === selected ? '当前' : undefined })) : palette === 'commands' ? commands : palette === 'skills' ? availableSkills.map(skill => ({ id: skill.path, label: skill.name, detail: skill.description })) : history.map((text, index) => ({ id: String(index), label: text }))}
+      onClose={() => { setPalette(null); requestAnimationFrame(() => composer.current?.focus()) }} onChoose={id => { if (palette === 'threads') { setPalette(null); jumpToNotice(id) } else if (palette === 'commands') runCommand(id); else if (palette === 'skills') { const skill = availableSkills.find(row => row.path === id); if (skill) useSkill(skill) } else { setDraft(history[Number(id)]); setPalette(null); requestAnimationFrame(() => composer.current?.focus()) } }} />}
   </div></GenuiProvider></ChoiceProvider></FilePreviewProvider>
 }

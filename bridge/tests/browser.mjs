@@ -267,7 +267,7 @@ try {
   await page.locator('.skill-chip').filter({ hasText: 'fixture-skill' }).waitFor()
   await page.getByRole('button', { name: '移除 Skill fixture-skill' }).click()
   await input.press('$')
-  await page.getByRole('textbox', { name: '选择本轮 Skill…' }).fill('fixture')
+  await page.getByRole('combobox', { name: '选择本轮 Skill…' }).fill('fixture')
   await page.keyboard.press('Enter')
   await page.locator('.skill-chip').filter({ hasText: 'fixture-skill' }).waitFor()
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jE9sAAAAASUVORK5CYII='
@@ -295,7 +295,7 @@ try {
   await page.getByLabel('当前会话模型', { exact: true }).waitFor()
   await page.keyboard.press('Escape')
   await input.focus(); await input.press('Control+r')
-  await page.getByRole('textbox', { name: '搜索输入历史…' }).fill('查看本轮附件')
+  await page.getByRole('combobox', { name: '搜索输入历史…' }).fill('查看本轮附件')
   await page.screenshot({ path: resolve(output, 'command-history.png'), fullPage: true })
   await page.keyboard.press('Enter')
   assert.equal(await input.inputValue(), '查看本轮附件和技能')

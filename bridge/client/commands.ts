@@ -3,7 +3,7 @@ export const commands = [
   { id: '/review', label: '原生代码审查', detail: '审查未提交改动、基础分支或指定提交' },
   { id: '/doctor', label: '连接与诊断', detail: '分层状态、只读网络检查与脱敏报告' },
   { id: '/new', label: '新建会话', detail: '在当前工作区开始新会话', key: 'Ctrl Alt N' },
-  { id: '/resume', label: '查找会话', detail: '打开工作区和最近会话' },
+  { id: '/resume', label: '查找会话', detail: '搜索所有工作区的会话，保留当前草稿', key: 'Ctrl Alt K' },
   { id: '/model', label: '模型与推理强度', detail: '默认模型与当前会话设置' },
   { id: '/plan', label: '规划模式', detail: '先调查与形成方案；再次输入切回执行' },
   { id: '/goal', label: '设定与管理目标', detail: '定义验收终点，查看、暂停或恢复目标' },
@@ -23,7 +23,7 @@ export const commands = [
   { id: '/help', label: '快捷键与帮助', detail: '查看网页支持的交互操作', key: 'Ctrl /' },
 ]
 export const shortcuts = [
-  ['聚焦输入框', 'Ctrl / ⌘ K'], ['命令面板', 'Ctrl / ⌘ Shift P'], ['设置', 'Ctrl / ⌘ ,'],
+  ['聚焦输入框', 'Ctrl / ⌘ K'], ['快速切换会话', 'Ctrl / ⌘ Alt K'], ['命令面板', 'Ctrl / ⌘ Shift P'], ['设置', 'Ctrl / ⌘ ,'],
   ['新建会话', 'Ctrl / ⌘ Alt N'], ['快捷键说明', 'Ctrl / ⌘ /'],
   ['发送 / 补充当前任务', 'Enter（可在常规中更改）'], ['换行', 'Shift Enter'],
   ['排到下一轮（执行中）', 'Tab'], ['中断任务（输入框为空）', 'Esc'], ['中断任务（无选中文字）', 'Ctrl C'],

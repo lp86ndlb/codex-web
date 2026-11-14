@@ -12,7 +12,7 @@ export function readNavigation(raw: string | null): NavigationLayout {
     return { version: 1, workspaces: ids(value.workspaces), threads: ids(value.threads), collapsed: Object.fromEntries(Object.entries(value.collapsed || {}).filter(([key, value]) => key.length <= 200 && typeof value === 'boolean').map(([key, value]) => [key, value as boolean])), read }
   } catch { return { version: 1, workspaces: [], threads: [], collapsed: {}, read: {} } }
 }
-export function unreadCompletion(summary: ThreadSummary, view: ThreadView | undefined, mark: ReadMark | undefined) {
+export function unreadCompletion(summary: ThreadSummary, view: Pick<ThreadView, 'runs' | 'updatedAt'> | undefined, mark: ReadMark | undefined) {
   if (!mark) return true
   const run = view?.runs?.at(-1)
   // A click can precede hydration of the completed run. Its recorded completion

@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react'
 import { ArrowUpRight, ChevronDown, Folder, GripVertical, MessageSquare, MoreHorizontal, Pencil, Plus } from 'lucide-react'
-import type { Approval, ThreadSummary, ThreadView, WorkspaceInfo } from '../shared/types.ts'
+import type { Approval, ThreadSummary, WorkspaceInfo } from '../shared/types.ts'
+import type { ActivityView } from '../shared/types.ts'
 import { appendNavigation, moveNavigation, navigationKey, orderedNavigation, readNavigation, threadReadEvent, unreadCompletion } from '../shared/navigation-order.ts'
 import { IconButton } from './components.tsx'
 import { StateDot } from './dsh/StateDot.tsx'
@@ -9,7 +10,7 @@ export function workspaceFor(workspaces: WorkspaceInfo[], path: string) {
   return workspaces.filter(row => path === row.path || path.startsWith(row.path.replace(/\/$/, '') + '/')).sort((a, b) => b.path.length - a.path.length)[0]
 }
 interface GroupProps {
-  workspaces: WorkspaceInfo[]; threads: ThreadSummary[]; selected: string | null; workspaceId?: string; views: Record<string, ThreadView>; approvals: Approval[]; busy: boolean; search: string
+  workspaces: WorkspaceInfo[]; threads: ThreadSummary[]; selected: string | null; workspaceId?: string; views: Record<string, ActivityView>; approvals: Approval[]; busy: boolean; search: string
   onChoose: (id: string) => void; onNew: (id: string) => void; onRename: (workspace: WorkspaceInfo) => void
   menuThreadId?: string; onThreadMenu: (target: ThreadMenuTarget, toggle?: boolean) => void
   reveal?: { id: string; seq: number }

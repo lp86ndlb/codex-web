@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowUpRight, CheckCircle2, ChevronDown, MessageCircleQuestion, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
-import type { Approval, ThreadSummary, ThreadView, WorkspaceInfo } from '../shared/types.ts'
+import type { Approval, ThreadSummary, WorkspaceInfo } from '../shared/types.ts'
+import type { ActivityView } from '../shared/types.ts'
 import { newThreadNotices, threadActivity, type ThreadActivity, type ThreadNotice } from '../shared/thread-notices.ts'
 import { Presence, useExitList } from './Motion.tsx'
 import { threadReadEvent } from '../shared/navigation-order.ts'
 
-export function useThreadNotices(threads: ThreadSummary[], views: Record<string, ThreadView>, approvals: Approval[], connected: boolean, selected: string | null) {
+export function useThreadNotices(threads: ThreadSummary[], views: Record<string, ActivityView>, approvals: Approval[], connected: boolean, selected: string | null) {
   const previous = useRef<Map<string, ThreadActivity> | null>(null); const [notices, setNotices] = useState<ThreadNotice[]>([])
   const seenThreads = useRef(new Set<string>())
   useEffect(() => {

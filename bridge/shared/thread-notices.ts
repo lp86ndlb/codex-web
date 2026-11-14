@@ -1,9 +1,9 @@
-import type { Approval, ThreadSummary, ThreadView } from './types.ts'
+import type { ActivityView, Approval, ThreadSummary } from './types.ts'
 import { pendingChoiceMessage } from './choices.ts'
 
 export interface ThreadActivity { id: string; title: string; cwd: string; status: string; attention: boolean; updatedAt: number; turn: string; loaded?: boolean; fresh?: boolean; attentionKey?: string }
 export interface ThreadNotice extends ThreadActivity { kind: 'waiting' | 'completed'; key: string }
-export function threadActivity(threads: ThreadSummary[], views: Record<string, ThreadView>, approvals: Approval[]): Map<string, ThreadActivity> {
+export function threadActivity(threads: ThreadSummary[], views: Record<string, ActivityView>, approvals: Approval[]): Map<string, ThreadActivity> {
   const pending = new Map<string, string[]>()
   for (const approval of approvals) pending.set(approval.threadId, [...(pending.get(approval.threadId) || []), `${approval.id}:${approval.questions.map(q => q.id + ':' + q.question).join('|')}`])
   const ids = new Set([...threads.map(row => row.id), ...Object.keys(views), ...pending.keys()])
@@ -11,7 +11,7 @@ export function threadActivity(threads: ThreadSummary[], views: Record<string, T
   return new Map([...ids].map(id => {
     const view = views[id]; const summary = summaries.get(id)
     const summaryAttention = summary?.attention && (!view || summary.updatedAt >= view.updatedAt)
-    const choice = view?.choicePending ? `choice:${pendingChoiceMessage(view.items || [])?.id || ''}` : ''
+    const choice = view?.choicePending ? `choice:${view.choiceId || pendingChoiceMessage(view.items || [])?.id || ''}` : ''
     const attentionKey = pending.get(id)?.sort().join(';') || choice || (summaryAttention ? 'summary' : '')
     return [id, { id, title: view?.title || summary?.title || '会话', cwd: view?.cwd || summary?.cwd || '', status: summary && (!view || summary.updatedAt > view.updatedAt) ? summary.status || view?.status || 'idle' : view?.status || summary?.status || 'idle', attention: Boolean(attentionKey), attentionKey, updatedAt: Math.max(view?.updatedAt || 0, summary?.updatedAt || 0), turn: view?.turnId || view?.runs?.at(-1)?.id || '', loaded: Boolean(view) }]
   }))

@@ -16,11 +16,24 @@ export function NativeActions({ action, thread, onClose, onComplete }: { action:
   async function submit() {
     if (busy || unknown) return
     setBusy(true); setError('')
+    let submitted = false
     try {
+      if (kind === 'fork' && boundary) {
+        // A live conversation can show more turns than a later bounded read.
+        // Pin the user's chosen boundary before the native fork validates it.
+        let source = await api<ThreadView>('/threads/' + encodeURIComponent(thread.id))
+        const cursors = new Set<string>()
+        while (!source.items.some(item => item.turnId === boundary) && source.history?.hasOlder && source.history.cursor && !cursors.has(source.history.cursor)) {
+          cursors.add(source.history.cursor)
+          source = await api<ThreadView>(`/threads/${encodeURIComponent(thread.id)}/history?cursor=${encodeURIComponent(source.history.cursor)}`)
+        }
+        if (!source.items.some(item => item.turnId === boundary)) throw new Error('所选提问已不在当前历史中，请重新选择分支位置。')
+      }
       const input = kind === 'fork' ? (boundary ? { beforeTurnId: boundary } : {}) : { target: { type: target, ...(target === 'baseBranch' ? { branch: detail.trim() } : target === 'commit' ? { sha: detail.trim() } : target === 'custom' ? { instructions: detail.trim() } : {}) } }
+      submitted = true
       const result = await api<ThreadView>('/threads/' + encodeURIComponent(thread.id) + '/' + kind, input)
       onComplete(result, kind === 'fork'); exit.exit()
-    } catch (error) { setError(message(error)); setUnknown(uncertainSubmission(error)) } finally { setBusy(false) }
+    } catch (error) { setError(message(error)); setUnknown(submitted && uncertainSubmission(error)) } finally { setBusy(false) }
   }
   const blocked = busy || unknown || Boolean(thread.compacting) || (kind === 'review' || !boundary) && Boolean(thread.turnId) || kind === 'review' && target !== 'uncommittedChanges' && !detail.trim()
   return <dialog ref={dialog} className="settings-dialog native-action-dialog" data-exiting={exit.closing || undefined} onCancel={event => { event.preventDefault(); if (!busy) exit.exit() }}>

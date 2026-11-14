@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { ArrowUp, Code2, Command, File, GitBranch, ListPlus, LoaderCircle, Paperclip, ShieldCheck, Sparkles, Square, Target, X, Check } from 'lucide-react'
 import type { AttachmentInfo, ModelOption, Preferences, QueuedMessage, SessionOptions, SkillInfo, ThreadView } from '../shared/types.ts'
 import { IconButton } from './components.tsx'
@@ -32,14 +32,17 @@ export function Composer(p: {
   const [historyIndex, setHistoryIndex] = useState(-1); const unsent = useRef('')
   const commandQuery = !p.editing && /^\/[^\s]*$/.test(p.draft) ? p.draft.toLowerCase() : null
   const query = commandQuery?.slice(1) || ''
-  const commandChoices = commands.filter(row => `${row.id} ${row.label} ${row.detail}`.toLowerCase().includes(query)).map(row => ({ ...row, skill: undefined as SkillInfo | undefined }))
-  const skillChoices = p.skillIndex.filter(skill => `${skill.name} ${skill.description}`.toLowerCase().includes(query.replace(/^\$/, ''))).map(skill => ({ id: `skill:${skill.path}`, label: skill.name, detail: skill.description, skill }))
+  const commandChoices = useMemo(() => commandQuery === null || dismissed ? [] : commands.filter(row => `${row.id} ${row.label} ${row.detail}`.toLowerCase().includes(query)).map(row => ({ ...row, skill: undefined as SkillInfo | undefined })), [commandQuery, query, dismissed])
+  const skillChoices = useMemo(() => commandQuery === null || dismissed ? [] : p.skillIndex.filter(skill => `${skill.name} ${skill.description}`.toLowerCase().includes(query.replace(/^\$/, ''))).map(skill => ({ id: `skill:${skill.path}`, label: skill.name, detail: skill.description, skill })), [commandQuery, query, dismissed, p.skillIndex])
   const choices = commandQuery !== null && !dismissed ? [...commandChoices, ...skillChoices].slice(0, 100) : []
   const efforts = p.models.find(model => model.id === p.options.model)?.efforts || ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
   const canSend = Boolean(p.draft.trim() || p.files.length || p.skills.length || p.references.length) && !p.busy && !p.disabled && !p.uploading
   useEffect(() => { setMenuIndex(0); setDismissed(false); setReferenceDismissed(false) }, [p.draft])
   useEffect(() => { p.input.current?.closest('form')?.querySelector('[data-menu-active="true"]')?.scrollIntoView({ block: 'nearest' }) }, [menuIndex])
   function sizeInput() {
+    // Native sizing avoids resetting the live textarea to zero on every key,
+    // which forced multiple layouts through the conversation and its dock.
+    if (CSS.supports('field-sizing', 'content')) return
     const node = p.input.current
     if (!node) return
     node.style.height = '0px'
@@ -49,6 +52,7 @@ export function Composer(p: {
   }
   useLayoutEffect(sizeInput, [p.draft, p.prefs.fontSize])
   useEffect(() => {
+    if (CSS.supports('field-sizing', 'content')) return
     const node = p.input.current; if (!node) return
     let previous = node.clientWidth
     const observer = new ResizeObserver(() => { if (node.clientWidth !== previous) { previous = node.clientWidth; sizeInput() } })

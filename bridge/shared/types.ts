@@ -120,6 +120,11 @@ export interface ThreadPatch {
   changes: Partial<Omit<ThreadView, 'items' | 'id' | 'revision'>>; items: Item[]; order?: string[]
 }
 
+/** Lightweight browser state for background badges and completion notices. */
+export type ActivityView = Pick<ThreadView, 'id' | 'revision' | 'title' | 'cwd' | 'status' | 'updatedAt' | 'turnId' | 'choicePending' | 'externalOwner' | 'compacting'> & {
+  runs?: ThreadView['runs']; choiceId?: string; items?: Item[]
+}
+
 export interface ThreadSummary {
   id: string
   title: string

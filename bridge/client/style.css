@@ -569,6 +569,9 @@ input[type='checkbox']:not(.switch-control input):not([data-cweb-check]):active 
 .composer-region { padding-top: 8px; padding-bottom: 16px; }
 .compact-composer { position: relative; border-radius: 17px; box-shadow: 0 4px 24px #00000008; }
 .compact-composer textarea { display: block; min-height: 48px; max-height: min(300px, 35vh); resize: none; padding: 13px 17px 8px; line-height: 1.6; }
+@supports (field-sizing: content) {
+  .compact-composer textarea { field-sizing: content; height: auto; overflow-y: auto; }
+}
 .compact-composer .composer-toolbar { padding: 6px 10px 9px; gap: 8px; min-height: 42px; }
 .compact-composer .composer-options { flex: 1; min-width: 0; gap: 4px; flex-wrap: wrap; }
 .compact-composer .model-select select { max-width: 180px; }
@@ -615,6 +618,12 @@ input[type='checkbox']:not(.switch-control input):not([data-cweb-check]):active 
 .palette-results small { color: var(--muted); font-size: 12px; margin-top: 6px; }
 .palette-footer { border-top: 1px solid var(--line); padding: 12px 22px; color: var(--muted); font-size: 12px; }
 .palette-footer span { margin-left: 20px; }
+.palette-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.palette-footer nav { display: flex; align-items: center; gap: 6px; }
+.palette-footer nav span { margin: 0; }
+.palette-footer nav button { padding: 5px 8px; border-radius: 6px; }
+.search-switch { display: inline-flex; align-items: center; justify-content: center; padding: 5px; margin: -5px; border-radius: 5px; color: var(--muted); }
+.search-switch:hover { color: var(--text); background: var(--selected); }
 [data-code-wrap='false'] .markdown pre, [data-code-wrap='false'] .source-code { white-space: pre; overflow-x: auto; }
 [data-code-wrap='true'] .markdown pre, [data-code-wrap='true'] .source-code { white-space: pre-wrap; overflow-wrap: anywhere; }
 [data-animations='false'] *, [data-animations='false'] *::before, [data-animations='false'] *::after { animation: none !important; transition: none !important; }
