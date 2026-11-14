@@ -404,13 +404,20 @@ try {
   await page.screenshot({ path: resolve(output, 'genui-panel.png'), fullPage: true })
   await page.getByRole('button', { name: '关闭交互面板' }).click()
   await page.reload()
+  // Earlier attachment turns are now intentionally fetched only when browsed.
+  for (let attempt = 0; attempt < 12 && !await page.locator('.message-attachment').filter({ hasText: 'dragged.txt' }).count(); attempt++) {
+    const load = page.locator('.history-load-older')
+    await load.waitFor(); await load.click()
+    await page.waitForFunction(() => !document.querySelector('.history-load-older')?.disabled)
+  }
+  await page.locator('.message-attachment').filter({ hasText: 'dragged.txt' }).scrollIntoViewIfNeeded()
   await page.locator('.message-attachment').filter({ hasText: 'dragged.txt' }).waitFor()
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark')
   assert.equal(await input.evaluate(node => getComputedStyle(node).fontSize), '18px')
   await page.getByRole('button', { name: '归档会话', exact: true }).click()
   await page.getByRole('heading', { name: /让想法/ }).waitFor()
   assert.equal(await page.getByRole('combobox', { name: '模型', exact: true }).textContent(), '测试模型')
-  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), 'medium')
+  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), 'Medium')
 
   await page.getByRole('button', { name: /连接与设置/ }).click()
   await page.getByRole('button', { name: '归档会话', exact: true }).last().click()

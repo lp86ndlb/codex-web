@@ -117,6 +117,8 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
     }
     const threadMatch = /^\/api\/threads\/([^/]+)(?:\/(message|edit|interrupt|rename|archive|restore|compact|queue|options|release|handoff|todo-connect|todo-link|snapshot|goal))?$/.exec(path)
     const deliveryMatch = /^\/api\/threads\/([^/]+)\/delivery\/([^/]+)$/.exec(path)
+    const historyMatch = /^\/api\/threads\/([^/]+)\/history$/.exec(path)
+    if (historyMatch && req.method === 'GET') { json(res, await bridge.olderHistory(decodeURIComponent(historyMatch[1]), z.string().min(1).max(4000).parse(url.searchParams.get('cursor')))); return }
     if (deliveryMatch && req.method === 'GET') { json(res, await bridge.delivery(decodeURIComponent(deliveryMatch[1]), z.string().uuid().parse(deliveryMatch[2]))); return }
     const nativeMatch = /^\/api\/threads\/([^/]+)\/(fork|review)$/.exec(path)
     if (nativeMatch && req.method === 'POST') {
@@ -188,10 +190,13 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
       res.write(': connected\n\n')
       streams.add(res)
       const send = (event: StreamEvent) => {
+        if (res.destroyed) return
         if (res.writableLength > 2 * 1024 * 1024) { res.destroy(); return }
         res.write(`data: ${JSON.stringify(event)}\n\n`)
       }
       bridge.on('event', send)
+      const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15_000)
+      res.on('close', () => { clearInterval(heartbeat); bridge.off('event', send); streams.delete(res) })
       send({ type: 'runtime', runtime: bridge.rpc.status })
       send({ type: 'threads', threads: bridge.list() })
       send({ type: 'workspaces', workspaces: bridge.catalog.list() })
@@ -200,9 +205,7 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
       send({ type: 'queue', queue: bridge.queue() })
       send({ type: 'approvals', approvals: bridge.approvals() })
       const requested = url.searchParams.get('thread')
-      if (requested && bridge.threads.has(requested)) send({ type: 'thread', thread: bridge.threads.get(requested)! })
-      const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15_000)
-      res.on('close', () => { clearInterval(heartbeat); bridge.off('event', send); streams.delete(res) })
+      if (requested && bridge.threads.has(requested)) send({ type: 'thread', thread: await bridge.open(requested) })
       return
     }
     if (path === '/api/threads' && req.method === 'GET') { json(res, await bridge.refreshList()); return }

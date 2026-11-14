@@ -116,8 +116,15 @@ try {
   await rpc.call('test/finish', { threadId: two.id })
   results.mcpFormAndConcurrentTopics = true
 
+  // The fork boundary is older than the default recent-turn response. Browse
+  // that page explicitly before asking the native fork dialog to use it.
+  if (!bridge.threads.get(one.id).items.some(item => item.text === '检查乐观发送延迟')) {
+    await page.locator('.history-load-older').click()
+    await page.locator('.user-bubble').filter({ hasText: '检查乐观发送延迟' }).waitFor()
+  }
+  const boundary = bridge.threads.get(one.id).items.find(item => item.text === '检查乐观发送延迟').turnId
   await page.getByRole('button', { name: '分支与原生审查', exact: true }).click()
-  await page.getByLabel('分支位置', { exact: true }).selectOption({ index: 2 })
+  await page.getByLabel('分支位置', { exact: true }).selectOption(boundary)
   await page.getByRole('button', { name: '创建分支', exact: true }).click()
   await page.getByRole('button', { name: '查看来源话题', exact: true }).waitFor()
   assert.ok(bridge.threads.get(one.id).items.some(item => item.text === '回执丢失仍只执行一次'))

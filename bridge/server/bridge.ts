@@ -26,6 +26,9 @@ import { AccountUsage } from './account-usage.ts'
 interface PendingRequest { wireId: string | number; approval: Approval; params: Record<string, unknown> }
 interface RecoverySource { input?: MessageInput; sourceTurnId: string; retryTurnId?: string; attempt: number; failure: string; blocked?: boolean; starting?: boolean; timer?: ReturnType<typeof setTimeout> }
 interface CompactOperation { previousTurns: Set<string>; turnId?: string; submitted: boolean }
+interface HistoryWindow { cursor?: string; nativeCursor?: string; legacy?: unknown[]; legacyBefore?: number; consumed: Set<string>; expanded?: boolean; boundary?: string }
+const HISTORY_PAGE_TURNS = 8
+const HISTORY_INITIAL_TURNS = 2
 export interface MessageInput { text: string; model?: string; effort?: string; mode: Mode; approvalPolicy?: ApprovalPolicy; collaborationMode?: 'default' | 'plan'; steer?: boolean; attachments?: string[]; skills?: string[]; clientMessageId?: string }
 
 /** Native Codex owns history; this instance owns only live UI projections and unresolved prompts. */
@@ -61,8 +64,18 @@ export class Bridge extends EventEmitter {
   private summaryTimer?: ReturnType<typeof setTimeout>
   private refreshPromise?: Promise<ThreadSummary[]>
   private listReadAt = 0
+  private listEpoch = 0
+  private legacyScanTimer?: ReturnType<typeof setTimeout>
+  private legacyScanAttempted = false
+  private legacyDiscovered = new Map<string, ThreadSummary>()
+  private listMutation = 0
+  private listRemovedAt = new Map<string, number>()
   private reading = new Map<string, Promise<ThreadView>>()
   private readAt = new Map<string, number>()
+  private historyWindows = new Map<string, HistoryWindow>()
+  private historyPaging = new Map<string, Promise<ThreadView>>()
+  private historyResets = new Set<string>()
+  private historyEpochs = new Map<string, number>()
   private todoMcpThreads = new Set<string>()
   private todoLinksActive = new Set<string>()
   private todoRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -107,6 +120,9 @@ export class Bridge extends EventEmitter {
       if (this.reconciliationTimer) clearTimeout(this.reconciliationTimer)
       this.reconciliationTimer = undefined; this.reconciling.clear(); this.reconciledAt.clear()
       this.modePresets = null
+      this.listEpoch++
+      if (this.legacyScanTimer) clearTimeout(this.legacyScanTimer)
+      this.legacyScanTimer = undefined
       this.loaded.clear(); this.pending.clear(); this.ownedTurns.clear(); this.fresh.clear(); this.sent.clear(); this.reading.clear(); this.readAt.clear(); this.todoMcpThreads.clear(); this.todoLinksActive.clear(); this.listReadAt = 0
       this.publish({ type: 'approvals', approvals: [] })
       for (const thread of this.threads.values()) {
@@ -124,10 +140,109 @@ export class Bridge extends EventEmitter {
   get workspace() { return this.catalog.get(this.catalog.list()[0]?.id || '') }
   get active() { return this.compactions.size > 0 || this.queued.length > 0 || this.creating > 0 || this.submitting.size > 0 || this.opening.size > 0 || [...this.threads.values()].some(thread => thread.turnId) }
   async initialize() { await this.catalog.initialize(); await this.plugin.initialize() }
-  private async projectHistory(value: unknown) {
-    const thread = projectThread(await this.hydrateHistory(value))
-    try { return await this.metrics.enrich(thread) }
-    catch { thread.error ||= '本地任务统计暂时无法读取；CLI 对话记录仍可正常查看和继续。'; return thread }
+  private historyMetadata(window: HistoryWindow) { return { hasOlder: Boolean(window.cursor), ...(window.cursor ? { cursor: window.cursor } : {}) } }
+  private historyEpoch(id: string) { return `${this.reconciliationEpoch}:${this.historyEpochs.get(id) || 0}` }
+  private checkHistoryEpoch(id: string, epoch: string) {
+    if (this.disposed || this.historyEpoch(id) !== epoch) throw new BridgeError('HISTORY_STALE', '历史记录已变化，请重新打开会话。', 409)
+  }
+  private async projectHistory(value: unknown, replace = false) {
+    const raw = record(value), id = string(raw.id), baseline = this.threads.get(id)
+    const epoch = this.historyEpoch(id)
+    replace = this.historyResets.delete(id) || replace
+    let window = !replace ? this.historyWindows.get(id) : undefined
+    let turns: unknown[]
+    if (raw.historyMode === 'paginated') {
+      const page = record(await this.rpc.call('thread/turns/list', { threadId: id, limit: HISTORY_INITIAL_TURNS, sortDirection: 'desc', itemsView: 'full' }))
+      this.checkHistoryEpoch(id, epoch)
+      turns = array(page.data).slice().reverse()
+      if (!replace) window = this.historyWindows.get(id) || window
+      const boundary = string(record(turns[0]).id)
+      if (!window || !window.expanded && window.boundary !== boundary) {
+        const cursor = string(page.nextCursor) || undefined
+        window = { ...(cursor ? { cursor: randomUUID(), nativeCursor: cursor } : {}), consumed: new Set(), boundary }
+      }
+    } else {
+      // Older CLIs cannot page persisted turns. Keep the native snapshot in the
+      // service, while projecting only the recent suffix to the browser.
+      const legacy = array(raw.turns).length ? raw : record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: true })).thread)
+      this.checkHistoryEpoch(id, epoch)
+      const all = array(legacy.turns), start = Math.max(0, all.length - HISTORY_INITIAL_TURNS)
+      turns = all.slice(start)
+      if (!replace) window = this.historyWindows.get(id) || window
+      const boundary = string(record(turns[0]).id)
+      if (!window || !window.expanded && window.boundary !== boundary) window = { ...(start ? { cursor: randomUUID() } : {}), legacy: all, legacyBefore: start, consumed: new Set(), boundary }
+      else { const first = window.expanded ? baseline?.runs?.[0]?.id : undefined, before = first ? all.findIndex(turn => record(turn).id === first) : start; window.legacy = all; window.legacyBefore = before < 0 ? start : before }
+    }
+    this.historyWindows.set(id, window)
+    let thread = projectThread({ ...raw, turns })
+    thread.history = this.historyMetadata(window)
+    try { thread = await this.metrics.enrich(thread) }
+    catch { thread.error ||= '本地任务统计暂时无法读取；CLI 对话记录仍可正常查看和继续。' }
+    this.checkHistoryEpoch(id, epoch)
+    const current = this.threads.get(id)
+    const changedDuringRead = baseline && current && current.revision !== baseline.revision && (current.items !== baseline.items || current.turnId !== baseline.turnId)
+    const known = !replace && (window.expanded || changedDuringRead) ? current : undefined
+    if (known) {
+      const incoming = new Set(thread.runs?.map(run => run.id)), oldRuns = known.runs || []
+      const lastOverlap = oldRuns.findLastIndex(run => incoming.has(run.id))
+      const prefix = window.expanded ? oldRuns.filter((run, index) => !incoming.has(run.id) && (lastOverlap < 0 || index < lastOverlap)) : []
+      const suffix = lastOverlap < 0 ? [] : oldRuns.filter((run, index) => !incoming.has(run.id) && index > lastOverlap)
+      const runs = [...prefix, ...(thread.runs || []), ...suffix]
+      const byTurn = new Map<string, ThreadView['items']>()
+      for (const item of known.items) { const key = item.turnId || ''; const rows = byTurn.get(key) || []; rows.push(item); byTurn.set(key, rows) }
+      for (const run of thread.runs || []) byTurn.set(run.id, thread.items.filter(item => item.turnId === run.id))
+      // A live notification received while the native page was in flight owns
+      // the newer item/run state. It must not be overwritten by that old read.
+      const liveChanged = baseline && known.revision !== baseline.revision && (known.items !== baseline.items || known.turnId !== baseline.turnId)
+      if (liveChanged) {
+        const before = new Map(baseline.items.map(item => [item.id, item]))
+        for (const item of known.items) if (before.get(item.id) !== item) {
+          const key = item.turnId || '', rows = byTurn.get(key) || [], index = rows.findIndex(row => row.id === item.id)
+          if (index < 0) rows.push(item); else rows[index] = item
+          byTurn.set(key, rows)
+        }
+        const previous = new Map(baseline.runs?.map(run => [run.id, run]))
+        for (let i = 0; i < runs.length; i++) { const live = known.runs?.find(run => run.id === runs[i].id); if (live && previous.get(live.id) !== live) runs[i] = live }
+        thread = { ...thread, status: known.status, turnId: known.turnId, progress: known.progress, error: known.error }
+      }
+      thread.items = runs.flatMap(run => byTurn.get(run.id) || [])
+      thread.runs = runs
+    }
+    return thread
+  }
+
+  async olderHistory(id: string, cursor: string): Promise<ThreadView> {
+    const epoch = this.historyEpoch(id)
+    await this.rpc.start()
+    let thread = this.threads.get(id) || await this.open(id)
+    const workspace = this.catalog.forPath(thread.cwd)
+    try { await workspace.directory(thread.cwd) }
+    catch (error) { if (!(error instanceof BridgeError) || !['PATH_MISSING', 'NOT_DIRECTORY'].includes(error.code)) throw error }
+    this.checkHistoryEpoch(id, epoch)
+    const window = this.historyWindows.get(id)
+    if (!window) throw new BridgeError('HISTORY_STALE', '历史分页状态已变化，请重新打开会话。', 409)
+    if (window.consumed.has(cursor)) return this.threads.get(id) || thread
+    if (cursor !== window.cursor) throw new BridgeError('HISTORY_CURSOR', '历史分页位置已变化，请重新读取当前会话。', 409)
+    const key = `${id}:${cursor}`, pending = this.historyPaging.get(key)
+    if (pending) return pending
+    window.expanded = true
+    const operation = (async () => {
+      let turns: unknown[], next: string | undefined, before: number | undefined
+      if (window.legacy) { before = Math.max(0, (window.legacyBefore || 0) - HISTORY_PAGE_TURNS); turns = window.legacy.slice(before, window.legacyBefore); next = before ? String(before) : undefined }
+      else { const page = record(await this.rpc.call('thread/turns/list', { threadId: id, cursor: window.nativeCursor, limit: HISTORY_PAGE_TURNS, sortDirection: 'desc', itemsView: 'full' })); turns = array(page.data).slice().reverse(); next = string(page.nextCursor) || undefined; if (next && next === window.nativeCursor) throw new BridgeError('CLI_PROTOCOL', 'CLI 返回了重复的历史分页游标', 502) }
+      if (this.historyWindows.get(id) !== window || this.historyResets.has(id)) throw new BridgeError('HISTORY_STALE', '历史记录已变化，请重新打开会话。', 409)
+      this.checkHistoryEpoch(id, epoch)
+      const older = await this.metrics.enrich(projectThread({ id, cwd: thread.cwd, turns })).catch(() => projectThread({ id, cwd: thread.cwd, turns }))
+      this.checkHistoryEpoch(id, epoch)
+      if (this.historyWindows.get(id) !== window || this.historyResets.has(id)) throw new BridgeError('HISTORY_STALE', '历史记录已变化，请重新打开会话。', 409)
+      thread = this.threads.get(id) || thread
+      const itemIds = new Set(thread.items.map(item => item.id)), runIds = new Set(thread.runs?.map(run => run.id))
+      window.consumed.add(cursor); window.cursor = next ? randomUUID() : undefined; window.nativeCursor = next
+      if (before !== undefined) window.legacyBefore = before
+      const merged = { ...thread, items: [...older.items.filter(item => !itemIds.has(item.id)), ...thread.items], runs: [...(older.runs || []).filter(run => !runIds.has(run.id)), ...(thread.runs || [])], history: this.historyMetadata(window) }
+      this.changed(merged); return merged
+    })().finally(() => { this.historyPaging.delete(key) })
+    this.historyPaging.set(key, operation); return operation
   }
   private async hydrateHistory(value: unknown): Promise<Record<string, unknown>> {
     const raw = record(value)
@@ -286,6 +401,7 @@ export class Bridge extends EventEmitter {
     return threads
   }
   async restore(id: string) {
+    this.legacyDiscovered.delete(id)
     await this.assertAvailable(id)
     if (!(await this.archives()).some(thread => thread.id === id)) throw new BridgeError('THREAD_MISSING', '归档会话不存在', 404)
     await this.rpc.call('thread/unarchive', { threadId: id }); await this.refreshList(true)
@@ -391,6 +507,9 @@ export class Bridge extends EventEmitter {
     })
   }
   list(): ThreadSummary[] { return [...this.summaries.values()].sort((a, b) => b.updatedAt - a.updatedAt) }
+  private needsHistoryTrim(thread: ThreadView) { return !this.historyWindows.get(thread.id)?.expanded && (thread.runs?.length || 0) > HISTORY_INITIAL_TURNS }
+  // Patch recovery repairs an already-open reader's exact projection. Cold
+  // opens use open()/readHistory() and have a separate recent-turn limit.
   snapshot(id: string) { return this.sent.get(id) }
 
   /** Check only the native current turn. Silence, idle and notLoaded are never
@@ -667,22 +786,37 @@ export class Bridge extends EventEmitter {
         efforts: array(model.supportedReasoningEfforts).map(value => string(record(value).reasoningEffort)) }
     }) : []
     const account = accountResult.status === 'fulfilled' ? record(record(accountResult.value).account) : {}
-    return { capabilities: { diagnostics: true, durableMessages: true, mcpElicitation: true, nativeActions: true, fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true, contextUsageMenu: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
+    return { capabilities: { pagedHistory: true, diagnostics: true, durableMessages: true, mcpElicitation: true, nativeActions: true, fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true, contextUsageMenu: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
       account: string(account.type) || '未检测到登录；自定义供应商可使用环境变量', threads: this.list() }
   }
 
   async refreshList(force = false): Promise<ThreadSummary[]> {
     if (this.refreshPromise) return this.refreshPromise
     if (!force && Date.now() - this.listReadAt < 5000) return this.list()
-    this.refreshPromise = this.readList().finally(() => { this.refreshPromise = undefined })
+    this.refreshPromise = this.readList(true).then(value => { this.scheduleLegacyDiscovery(); return value }).finally(() => { this.refreshPromise = undefined })
     return this.refreshPromise
   }
-  private async readList(): Promise<ThreadSummary[]> {
+  private scheduleLegacyDiscovery() {
+    if (this.disposed || this.legacyScanAttempted || this.legacyScanTimer) return
+    // Let bootstrap and the first recent-turn request paint before asking the
+    // native engine for its slower JSONL scan-and-repair compatibility path.
+    this.legacyScanTimer = setTimeout(() => {
+      this.legacyScanTimer = undefined
+      if (this.disposed || this.rpc.status.state !== 'ready') return
+      this.legacyScanAttempted = true
+      void this.readList(false).catch(() => { if (!this.disposed) this.diagnostics.add({ layer: 'bridge', level: 'warning', title: '旧会话目录协调未完成，现有会话列表仍可使用。' }) })
+    }, 2000)
+    this.legacyScanTimer.unref()
+  }
+  private async readList(useStateDbOnly: boolean): Promise<ThreadSummary[]> {
     await this.rpc.start()
+    const epoch = this.listEpoch, mutation = this.listMutation
     let cursor: string | undefined
     const next = new Map<string, ThreadSummary>()
+    const seen = new Set<string>()
     do {
-      const result = record(await this.rpc.call('thread/list', { limit: 100, sortKey: 'updated_at', modelProviders: [], useStateDbOnly: this.listReadAt > 0, sourceKinds: ['cli', 'vscode', 'appServer', 'exec', 'unknown'], ...(cursor ? { cursor } : {}) }))
+      const result = record(await this.rpc.call('thread/list', { limit: 100, sortKey: 'updated_at', modelProviders: [], useStateDbOnly, sourceKinds: ['cli', 'vscode', 'appServer', 'exec', 'unknown'], ...(cursor ? { cursor } : {}) }))
+      if (this.disposed || epoch !== this.listEpoch) return this.list()
       for (const raw of array(result.data)) {
         const thread = projectThread(raw)
         const runtime = record(record(raw).status)
@@ -692,11 +826,23 @@ export class Bridge extends EventEmitter {
           attention: array(runtime.activeFlags).some(flag => ['waitingOnApproval', 'waitingOnUserInput'].includes(string(flag))) })
       }
       cursor = string(result.nextCursor) || undefined
+      if (cursor && seen.has(cursor)) throw new BridgeError('CLI_PROTOCOL', 'CLI 返回了重复的会话列表游标', 502)
+      if (cursor) seen.add(cursor)
     } while (cursor)
+    for (const [id, removed] of this.listRemovedAt) if (removed > mutation) next.delete(id)
+    if (!useStateDbOnly) {
+      // A slow scan must not overwrite a newer rename/run/create or resurrect
+      // a conversation archived after the scan began. It only fills gaps.
+      for (const [id, summary] of next) if (!this.summaries.has(id)) this.legacyDiscovered.set(id, summary)
+      for (const [id, summary] of this.summaries) next.set(id, summary)
+    } else {
+      for (const [id, summary] of this.legacyDiscovered) if (!next.has(id)) next.set(id, summary)
+    }
     for (const thread of this.threads.values()) if (this.loaded.has(thread.id)) next.set(thread.id, { id: thread.id, title: thread.title, cwd: thread.cwd, updatedAt: thread.updatedAt, status: thread.status, attention: thread.choicePending || next.get(thread.id)?.attention })
     const previousList = JSON.stringify(this.list()); const previousWorkspaces = JSON.stringify(this.catalog.list())
     this.summaries = next; this.listReadAt = Date.now()
     await this.catalog.recover([...next.values()].map(thread => thread.cwd))
+    if (this.disposed || epoch !== this.listEpoch) return this.list()
     if (previousWorkspaces !== JSON.stringify(this.catalog.list())) this.publish({ type: 'workspaces', workspaces: this.catalog.list() })
     if (previousList !== JSON.stringify(this.list())) this.publish({ type: 'threads', threads: this.list() })
     return this.list()
@@ -773,11 +919,14 @@ export class Bridge extends EventEmitter {
     const externalOwner = await this.owner(id)
     if (activate && externalOwner) await this.assertAvailable(id)
     const known = this.threads.get(id)
-    if (known && this.loaded.has(id) && !externalOwner && (!this.rpc.sharedEngine || this.ownedTurns.has(id) || this.fresh.has(id))) return await this.reconcile(id) || known
+    if (known && this.loaded.has(id) && !externalOwner && (!this.rpc.sharedEngine || this.ownedTurns.has(id) || this.fresh.has(id))) {
+      const current = await this.reconcile(id) || known
+      if (activate || !this.needsHistoryTrim(current)) return current
+    }
     if (!activate) {
       const pending = this.reading.get(id)
       if (pending) return pending
-      if (known && !known.error && (known.externalOwner || undefined) === externalOwner && Date.now() - (this.readAt.get(id) || 0) < 1500) return known
+      if (known && !this.needsHistoryTrim(known) && !known.error && (known.externalOwner || undefined) === externalOwner && Date.now() - (this.readAt.get(id) || 0) < 1500) return known
       const operation = this.readHistory(id, externalOwner).finally(() => this.reading.delete(id))
       this.reading.set(id, operation); return operation
     }
@@ -789,10 +938,13 @@ export class Bridge extends EventEmitter {
   }
 
   private async readHistory(id: string, externalOwner?: number): Promise<ThreadView> {
+    const epoch = this.historyEpoch(id)
     if (!this.summaries.has(id)) await this.refreshList(true)
     if (!this.summaries.has(id)) throw new BridgeError('THREAD_MISSING', '会话不存在或已归档', 404)
     const result = record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false }))
+    this.checkHistoryEpoch(id, epoch)
     const thread = await this.projectHistory(result.thread)
+    this.checkHistoryEpoch(id, epoch)
     thread.todoTools = this.threads.get(id)?.todoTools
     thread.recovery = this.threads.get(id)?.recovery
     thread.compacting = this.compactions.has(id)
@@ -803,12 +955,15 @@ export class Bridge extends EventEmitter {
     thread.externalOwner = externalOwner
     try { await this.catalog.forPath(thread.cwd).directory(thread.cwd) }
     catch { thread.error = '工作区目录暂时不可用，历史记录仍可查看。恢复原目录后可继续执行。' }
-    thread.turnId = null
-    if (thread.status === 'inProgress') thread.status = 'idle'
+    this.checkHistoryEpoch(id, epoch)
+    const current = this.threads.get(id)
+    if (this.ownedTurns.has(id) && current?.turnId) { thread.turnId = current.turnId; thread.status = current.status; thread.progress = current.progress }
+    else { thread.turnId = null; if (thread.status === 'inProgress') thread.status = 'idle' }
     this.readAt.set(id, Date.now()); this.changed(thread); return thread
   }
 
   private async resume(id: string): Promise<ThreadView> {
+    const epoch = this.historyEpoch(id)
     if (!this.summaries.has(id)) await this.refreshList(true)
     const summary = this.summaries.get(id)
     if (!summary) throw new BridgeError('THREAD_MISSING', '会话不存在或不属于当前工作区', 404)
@@ -816,8 +971,10 @@ export class Bridge extends EventEmitter {
     try { cwd = await this.catalog.forPath(summary.cwd).directory(summary.cwd) }
     catch (error) {
       if (!(error instanceof BridgeError) || !['PATH_MISSING', 'NOT_DIRECTORY'].includes(error.code)) throw error
-      const result = record(await this.rpc.call('thread/read', { threadId: id, includeTurns: true }))
+      const result = record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false }))
+      this.checkHistoryEpoch(id, epoch)
       const history = await this.projectHistory(result.thread)
+      this.checkHistoryEpoch(id, epoch)
       history.error = '工作区目录暂时不可用，历史记录仍可查看。恢复原目录后可继续执行。'
       this.changed(history); return history
     }
@@ -839,7 +996,9 @@ export class Bridge extends EventEmitter {
       threadId: id, cwd, excludeTurns: true, sandbox: (await this.preferences.options(id)).mode, approvalPolicy: (await this.preferences.options(id)).approvalPolicy, approvalsReviewer: 'user',
       config,
     }))
+    this.checkHistoryEpoch(id, epoch)
     const thread = await this.projectHistory(result.thread)
+    this.checkHistoryEpoch(id, epoch)
     thread.recovery = this.threads.get(id)?.recovery
     thread.compacting = this.compactions.has(id)
     thread.contextUsage ||= this.threads.get(id)?.contextUsage
@@ -861,6 +1020,7 @@ export class Bridge extends EventEmitter {
       thread.turnId = null
       if (thread.status === 'inProgress') thread.status = 'idle'
     }
+    this.checkHistoryEpoch(id, epoch)
     this.loaded.add(id); this.changed(thread)
     return thread
   }
@@ -967,9 +1127,11 @@ export class Bridge extends EventEmitter {
         await mkdir(backupDirectory, { recursive: true, mode: 0o700 })
         await writeFile(resolve(backupDirectory, `${randomUUID()}.json`), JSON.stringify({ threadId: id, beforeTurnId: edit.turnId, createdAt: Date.now(), thread: backup }), { mode: 0o600, flag: 'wx' })
         const response = record(await this.rpc.call('thread/revert', { threadId: id, beforeTurnId: edit.turnId }))
+        this.historyEpochs.set(id, (this.historyEpochs.get(id) || 0) + 1)
+        this.historyWindows.delete(id); this.historyResets.add(id)
         await Promise.all([this.sessionContexts.invalidate(id), this.sessionContexts.invalidate(`${id}:live`)])
         reverted = true
-        thread = await this.projectHistory(response.thread)
+        thread = await this.projectHistory(response.thread, true)
         thread.model ||= this.threads.get(id)?.model || ''; thread.todoTools = this.threads.get(id)?.todoTools
         this.changed(thread)
         this.queued = this.queued.filter(row => row.threadId !== id); this.publish({ type: 'queue', queue: this.queue() })
@@ -1050,6 +1212,9 @@ export class Bridge extends EventEmitter {
     const thread = await this.open(id)
     if (thread.turnId) throw new BridgeError('BUSY', '请先停止当前任务再归档', 409)
     await this.rpc.call('thread/archive', { threadId: id })
+    this.historyEpochs.set(id, (this.historyEpochs.get(id) || 0) + 1)
+    this.listRemovedAt.set(id, ++this.listMutation); this.legacyDiscovered.delete(id)
+    this.historyWindows.delete(id); this.historyResets.delete(id)
     this.loaded.delete(id); this.threads.delete(id); this.summaries.delete(id)
     this.sent.delete(id); this.readAt.delete(id)
     this.publish({ type: 'threads', threads: this.list() })
@@ -1105,6 +1270,8 @@ export class Bridge extends EventEmitter {
     if (method === 'thread/closed') { this.loaded.delete(id); this.todoMcpThreads.delete(id); return }
     if (method === 'thread/reverted') {
       this.cancelRecovery(id)
+      this.historyEpochs.set(id, (this.historyEpochs.get(id) || 0) + 1)
+      this.historyWindows.delete(id); this.historyResets.add(id)
       void this.sessionContexts.invalidate(id); void this.sessionContexts.invalidate(`${id}:live`)
       this.readAt.delete(id)
       if (!this.submitting.has(id)) void this.readHistory(id).catch(() => {})
@@ -1115,6 +1282,9 @@ export class Bridge extends EventEmitter {
     }
     if (method === 'thread/archived') {
       this.finishCompact(id, false)
+      this.historyEpochs.set(id, (this.historyEpochs.get(id) || 0) + 1)
+      this.listRemovedAt.set(id, ++this.listMutation); this.legacyDiscovered.delete(id)
+      this.historyWindows.delete(id); this.historyResets.delete(id)
       this.loaded.delete(id); this.threads.delete(id); this.summaries.delete(id)
       this.publish({ type: 'threads', threads: this.list() }); return
     }
@@ -1225,6 +1395,10 @@ export class Bridge extends EventEmitter {
     for (const id of this.compactions.keys()) this.finishCompact(id, false)
     for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)
     this.disposed = true; this.reconciliationEpoch++
+    this.listEpoch++
+    if (this.legacyScanTimer) clearTimeout(this.legacyScanTimer)
+    this.legacyScanTimer = undefined; this.legacyDiscovered.clear()
+    this.historyWindows.clear(); this.historyResets.clear()
     if (this.reconciliationTimer) clearTimeout(this.reconciliationTimer)
     this.reconciliationTimer = undefined; this.reconciling.clear(); this.reconciledAt.clear()
     await Promise.all([...this.metadataWrites])

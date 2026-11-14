@@ -7,6 +7,7 @@ import { CodexRpc } from '../server/rpc.ts'
 import { Bridge } from '../server/bridge.ts'
 import { Workspace } from '../server/workspace.ts'
 import { createHttpServer } from '../server/http.ts'
+import { loadFixtureHistory } from './history-fixture.ts'
 
 const output = resolve('test-results'); await mkdir(output, { recursive: true })
 const root = await mkdtemp(resolve(output, 'turn-rail-')), cwd = resolve(root, 'project'); await mkdir(cwd)
@@ -30,6 +31,7 @@ await writeFile(store, JSON.stringify(Object.fromEntries([short, long, sparse].m
 const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: store } })
 const bridge = new Bridge(rpc, new Workspace(cwd), resolve(root, 'home'), resolve(root, 'data'))
 await bridge.plugin.setEnabled(false)
+await loadFixtureHistory(bridge, long.id)
 const app = createHttpServer({ bridge, dist: resolve(process.env.CWEB_TEST_DIST || 'dist') })
 await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve))
 const browser = await chromium.launch({ executablePath: process.env.BROWSER_EXECUTABLE || '/usr/bin/microsoft-edge', headless: true, ignoreDefaultArgs: ['--headless=old'], args: ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage'] })

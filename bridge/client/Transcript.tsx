@@ -4,6 +4,7 @@ import type { ActivityCollapseTiming, Item, ThreadView } from '../shared/types.t
 import { activityExpansion } from '../shared/activity-presentation.ts'
 import { ActivityGroup, Notice, TranscriptItem } from './components.tsx'
 import { RunSummary } from './MessageMeta.tsx'
+import { message } from './api.ts'
 
 const PAGE_SIZE = 60
 const PAGE_STEP = 30
@@ -26,27 +27,34 @@ function transcriptRows(items: Item[]): Row[] {
 
 /** Keep keystrokes outside the Markdown tree; hydrate older messages on demand. */
 export interface MessageJump { id: string; seq: number }
-export const Transcript = memo(function Transcript({ thread, loading, approvals, expanded = false, collapseTiming = 'next-input', jumpTo, follow, paused, onEdit, onFork, editDisabled = false }: { thread?: ThreadView; loading: boolean; approvals: number; expanded?: boolean; collapseTiming?: ActivityCollapseTiming; jumpTo?: MessageJump | null; follow: MutableRefObject<boolean>; paused: boolean; onEdit?: (item: Item) => void; onFork?: (item: Item) => void; editDisabled?: boolean }) {
+export const Transcript = memo(function Transcript({ thread, loading, approvals, expanded = false, collapseTiming = 'next-input', jumpTo, follow, paused, onEdit, onFork, onLoadOlder, editDisabled = false }: { thread?: ThreadView; loading: boolean; approvals: number; expanded?: boolean; collapseTiming?: ActivityCollapseTiming; jumpTo?: MessageJump | null; follow: MutableRefObject<boolean>; paused: boolean; onEdit?: (item: Item) => void; onFork?: (item: Item) => void; onLoadOlder?: (id: string, cursor: string) => Promise<void>; editDisabled?: boolean }) {
   const [page, setPage] = useState<HistoryPage | null>(null)
   const [manualOpen, setManualOpen] = useState<Record<string, boolean>>({})
   const container = useRef<HTMLDivElement>(null); const handled = useRef(-1)
   const anchor = useRef<ReadingAnchor | null>(null)
   const paging = useRef(false)
   const lastAutoLoad = useRef(-Infinity)
+  const [remoteLoading, setRemoteLoading] = useState(false), [historyError, setHistoryError] = useState('')
+  const alive = useRef(true)
+  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   const items = useMemo(() => (thread?.items || []).filter(item => !['reasoning', 'plan'].includes(item.type) || Boolean(item.text.trim())), [thread?.items])
   const rows = useMemo(() => transcriptRows(items), [items])
-  const [observed, setObserved] = useState({ count: items.length, last: rows.at(-1)?.id })
-  if (observed.count !== items.length) {
-    setObserved({ count: items.length, last: rows.at(-1)?.id })
+  const [observed, setObserved] = useState({ count: items.length, first: items[0]?.id, last: rows.at(-1)?.id })
+  if (observed.count !== items.length || observed.first !== items[0]?.id || observed.last !== rows.at(-1)?.id) {
+    setObserved({ count: items.length, first: items[0]?.id, last: rows.at(-1)?.id })
+    const prefix = observed.first ? items.findIndex(item => item.id === observed.first) : 0
     // Freeze the reader's page and append a bounded live tail. New output must
     // neither evict the first visible question nor accumulate an unlimited DOM.
-    if (items.length > observed.count && !follow.current && !page && observed.last) setPage({ endId: observed.last, liveAfter: observed.count })
+    if (prefix > 0 && page) setPage({ ...page, liveAfter: page.liveAfter + prefix })
+    else if (items.length > observed.count && prefix <= 0 && !follow.current && !page && observed.last) setPage({ endId: observed.last, liveAfter: observed.count })
     else if (items.length < observed.count) setPage(null)
   }
   if (page && !paused && follow.current) setPage(null)
   const pageIndex = page ? rows.findIndex(row => row.id === page.endId) : -1
   const end = pageIndex < 0 ? rows.length : pageIndex + 1
   const start = Math.max(0, end - PAGE_SIZE)
+  const remoteOlder = Boolean(thread?.history?.hasOlder && thread.history.cursor && onLoadOlder)
+  const canEarlier = start > 0 || remoteOlder
   const arrival = page ? rows.findIndex(row => row.last >= page.liveAfter) : -1
   const tailStart = arrival < 0 ? rows.length : Math.max(end, arrival, rows.length - PAGE_SIZE)
   const rendered = useMemo(() => [...rows.slice(start, end), ...rows.slice(tailStart)], [rows, start, end, tailStart])
@@ -63,19 +71,29 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
     if (target) anchor.current = { id: target.dataset.messageId || target.dataset.activityId!, top: target.getBoundingClientRect().top - top }
   }, [])
   const earlier = useCallback(() => {
-    if (!start || paging.current) return
+    if (paging.current) return
+    if (!start) {
+      if (!thread?.history?.hasOlder || !thread.history.cursor || !onLoadOlder) return
+      paging.current = true; follow.current = false; remember(); setRemoteLoading(true); setHistoryError('')
+      void onLoadOlder(thread.id, thread.history.cursor).catch(error => {
+        anchor.current = null
+        if (alive.current) setHistoryError(message(error))
+      }).finally(() => { if (alive.current) { setRemoteLoading(false); paging.current = false } })
+      return
+    }
     paging.current = true; follow.current = false; remember()
     const nextEnd = Math.max(1, end - PAGE_STEP)
     setPage({ endId: rows[nextEnd - 1].id, liveAfter: page?.liveAfter ?? items.length })
-  }, [start, end, rows, page, items.length, remember, follow])
+  }, [start, end, rows, page, items.length, remember, follow, thread?.id, thread?.history?.cursor, thread?.history?.hasOlder, onLoadOlder])
   const newer = () => {
     follow.current = false; remember()
     const nextEnd = Math.min(rows.length, end + PAGE_STEP)
     setPage(nextEnd === rows.length ? null : { endId: rows[nextEnd - 1].id, liveAfter: page?.liveAfter ?? items.length })
   }
   useLayoutEffect(() => {
+    if (remoteLoading) return
     const saved = anchor.current; anchor.current = null; paging.current = false
-    if (!saved) return
+    if (!saved || follow.current) return
     const root = container.current; const viewport = root?.closest<HTMLElement>('.conversation')
     const id = CSS.escape(saved.id)
     const target = root?.querySelector<HTMLElement>(`[data-message-id="${id}"], .activity-group[data-activity-id="${id}"]`)
@@ -83,10 +101,10 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
       // Native anchoring may already retain the row: compensate only the error.
       viewport.scrollTop += target.getBoundingClientRect().top - viewport.getBoundingClientRect().top - saved.top
     }
-  }, [page, start, end])
+  }, [page, start, end, items, remoteLoading])
   useEffect(() => {
     const root = container.current; const viewport = root?.closest<HTMLElement>('.conversation')
-    if (!root || !viewport || !start) return
+    if (!root || !viewport || !canEarlier) return
     let touchY = 0
     const nearTop = () => {
       const button = root.querySelector<HTMLElement>('.history-load-older')
@@ -97,13 +115,13 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
       lastAutoLoad.current = performance.now(); earlier(); return true
     }
     const nested = (target: EventTarget | null) => target instanceof Element && Boolean(target.closest('pre,textarea,input,select,[role="dialog"],.genui-host'))
-    const wheel = (event: WheelEvent) => { if (event.deltaY < 0 && !nested(event.target) && upward()) event.preventDefault() }
+    const wheel = (event: WheelEvent) => { if (event.deltaY > 0) anchor.current = null; if (event.deltaY < 0 && !nested(event.target) && upward()) event.preventDefault() }
     const touchStart = (event: TouchEvent) => { touchY = event.touches[0]?.clientY || 0 }
     const touch = (event: TouchEvent) => { const y = event.touches[0]?.clientY ?? touchY; if (y - touchY > 12 && !nested(event.target)) upward(); touchY = y }
     const key = (event: KeyboardEvent) => { if (['PageUp', 'ArrowUp'].includes(event.key) && !nested(event.target) && upward()) event.preventDefault() }
     viewport.addEventListener('wheel', wheel, { passive: false }); viewport.addEventListener('touchstart', touchStart, { passive: true }); viewport.addEventListener('touchmove', touch, { passive: true }); viewport.addEventListener('keydown', key)
     return () => { viewport.removeEventListener('wheel', wheel); viewport.removeEventListener('touchstart', touchStart); viewport.removeEventListener('touchmove', touch); viewport.removeEventListener('keydown', key) }
-  }, [earlier, start])
+  }, [earlier, canEarlier])
   useLayoutEffect(() => {
     if (!jumpTo || jumpTo.seq === handled.current) return
     if (!jumpTo.id) { setPage(null); handled.current = jumpTo.seq; return }
@@ -129,7 +147,7 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
   if (loading && !thread) return <div className="transcript"><div className="conversation-skeleton" aria-label="正在加载会话"><i /><i /><i /><i /></div></div>
   const hidden = rows[start]?.first || 0
   const gap = end < tailStart ? <button className="history-load history-load-newer" type="button" onClick={newer}><ChevronDown size={16} />{arrival < 0 ? '显示较新的消息' : '显示中间的消息'} · 还有 {(rows[tailStart]?.first ?? items.length) - (rows[end - 1]?.last ?? -1) - 1} 条</button> : null
-  return <div className="transcript" ref={container} data-window-first-id={rendered[0]?.items[0].id} data-window-last-id={rendered.at(-1)?.items.at(-1)?.id} data-window-rows={rendered.length}>{hidden > 0 && <button className="history-load history-load-older" type="button" onClick={earlier}><ChevronUp size={16} />显示更早的消息 · 还有 {hidden} 条</button>}
+  return <div className="transcript" ref={container} data-window-first-id={rendered[0]?.items[0].id} data-window-last-id={rendered.at(-1)?.items.at(-1)?.id} data-window-rows={rendered.length}>{canEarlier && <button className="history-load history-load-older" type="button" disabled={remoteLoading} onClick={earlier}><ChevronUp size={16} />{remoteLoading ? '正在加载更早的消息…' : hidden > 0 ? `显示更早的消息 · 还有 ${hidden} 条已加载` : '显示更早的消息'}</button>}{historyError && <Notice text={historyError} />}
     {items.length ? rendered.map(row => {
       const item = row.items[0]; const last = row.items.at(-1)!; const run = runEnds.get(last.id)
       return <Fragment key={row.id}>{row.id === rows[tailStart]?.id && gap}{row.process ? <ActivityGroup items={row.items} expanded={isOpen(row)} onToggle={() => toggle(row)} /> : <TranscriptItem item={item} autoRecovery={Boolean(item.turnId && recoveryTurns.has(item.turnId))} onEdit={item.type === 'userMessage' && item.status !== 'sending' ? onEdit : undefined} onFork={item.type === 'userMessage' && item.status !== 'sending' ? onFork : undefined} editDisabled={editDisabled} />}{run && <RunSummary run={run} latest={(!page || arrival >= 0) && run.id === thread?.runs?.at(-1)?.id} />}</Fragment>

@@ -8,6 +8,7 @@ import { Bridge } from '../server/bridge.ts'
 import { Workspace } from '../server/workspace.ts'
 import { createHttpServer } from '../server/http.ts'
 import { tinyPng } from './image-fixture.ts'
+import { loadFixtureHistory } from './history-fixture.ts'
 
 // An invented, large transcript exercises real browser layout without opening
 // a real Codex session or copying any personal conversation into the fixture.
@@ -44,6 +45,7 @@ await writeFile(store, JSON.stringify(histories))
 const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: store } })
 const bridge = new Bridge(rpc, new Workspace(cwd), resolve(root, 'home'), resolve(root, 'data'))
 await bridge.plugin.setEnabled(false)
+await loadFixtureHistory(bridge, id)
 const app = createHttpServer({ bridge, dist: resolve(process.env.CWEB_TEST_DIST || 'dist') })
 await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${app.server.address().port}`

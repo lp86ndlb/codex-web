@@ -88,6 +88,8 @@ export interface Approval {
 export interface ThreadView {
   forkedFromId?: string
   historyMode?: 'legacy' | 'paginated'
+  /** Older native turns are fetched only after an explicit history request. */
+  history?: { hasOlder: boolean; cursor?: string }
   choicePending?: boolean
   externalOwner?: number | null
   todoTools?: 'native' | 'mcp' | 'waiting'
@@ -141,7 +143,7 @@ export interface RuntimeStatus {
 }
 
 export interface Bootstrap {
-  capabilities?: { diagnostics?: boolean; durableMessages?: boolean; nativeActions?: boolean; mcpElicitation?: boolean; fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
+  capabilities?: { pagedHistory?: boolean; diagnostics?: boolean; durableMessages?: boolean; nativeActions?: boolean; mcpElicitation?: boolean; fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
   token: string
   root: string
   workspaces: WorkspaceInfo[]

@@ -63,6 +63,9 @@ export function App() {
     if (value !== viewsRef.current) { viewsRef.current = value; setViews(value) }
   }, [])
   const [selected, setSelected] = useState<string | null>(null)
+  const pendingRestoreCandidate = useRef<string | null>(null)
+  const restoreEligible = useRef(true)
+  const cancelPendingRestore = useCallback(() => { pendingRestoreCandidate.current = null; restoreEligible.current = false }, [])
   const [jumpTarget, setJumpTarget] = useState<MessageJump | null>(null)
   const [historyNavigation, setHistoryNavigation] = useState(false); const jumpSequence = useRef(0)
   const goalPanel = useRef<GoalPanelHandle>(null); const [goalUpdate, setGoalUpdate] = useState<{ threadId: string; goal: ThreadGoal | null }>()
@@ -73,7 +76,28 @@ export function App() {
   const [busy, setBusy] = useState(false)
   const compactRequests = useRef(new Map<string, Promise<void>>())
   const [compactPending, setCompactPending] = useState<Record<string, boolean>>({})
-  const [loadingThread, setLoadingThread] = useState(false)
+  const [threadLoadError, setThreadLoadError] = useState<{ id: string; text: string } | null>(null)
+  const [threadRetry, setThreadRetry] = useState(0)
+  const serverToken = useRef<string | null>(null)
+  const threadReads = useRef(new Map<string, { controller: AbortController; promise: Promise<ThreadView> }>())
+  const readThread = useCallback((id: string) => {
+    const previous = threadReads.current.get(id)
+    if (previous && !previous.controller.signal.aborted) return previous
+    const controller = new AbortController()
+    const timeout = AbortSignal.timeout(25_000)
+    const token = serverToken.current
+    const promise = api<ThreadView>(`/threads/${encodeURIComponent(id)}`, undefined, { signal: AbortSignal.any([controller.signal, timeout]) })
+      .then(value => { if (token !== serverToken.current) throw new ApiError('STALE_VIEW', '会话已重新连接，正在读取最新内容。'); return value })
+      .catch(error => { if (timeout.aborted && !controller.signal.aborted) throw new Error('会话载入超时，请重试。'); throw error })
+      .finally(() => { if (threadReads.current.get(id)?.promise === promise) threadReads.current.delete(id) })
+    const request = { controller, promise }; threadReads.current.set(id, request); return request
+  }, [])
+  const loadOlderHistory = useCallback(async (id: string, cursor: string) => {
+    const token = serverToken.current
+    const value = await api<ThreadView>(`/threads/${encodeURIComponent(id)}/history?cursor=${encodeURIComponent(cursor)}`)
+    if (token === serverToken.current) updateViews(previous => mergeView(previous, value))
+  }, [updateViews])
+  useEffect(() => () => { for (const request of threadReads.current.values()) request.controller.abort(); threadReads.current.clear() }, [])
   const [streamConnected, setStreamConnected] = useState(false)
   const [sidebar, setSidebar] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localValue('cweb:sidebar-collapsed', 'false') === 'true')
@@ -158,8 +182,10 @@ export function App() {
   const dialogExit = useExitAction(() => { setSettings(false); setWorkspaceDialog(false); setRenameDialog(false); setWorkspaceEditing(null); requestAnimationFrame(() => composer.current?.focus()) }, dialog)
   const source = useRef<EventSource | null>(null)
   const thread = selected ? views[selected] : undefined
-  const activeWorkspace = (thread ? workspaceFor(workspaces, thread.cwd) : undefined) || workspaces.find(row => row.id === workspaceId)
-  const activeCwd = thread?.cwd || activeWorkspace?.path || ''
+  const selectedSummary = selected ? threads.find(row => row.id === selected) : undefined
+  const loadingThread = Boolean(selected && !thread && threadLoadError?.id !== selected)
+  const activeWorkspace = workspaceFor(workspaces, thread?.cwd || selectedSummary?.cwd || '') || workspaces.find(row => row.id === workspaceId)
+  const activeCwd = thread?.cwd || selectedSummary?.cwd || activeWorkspace?.path || ''
   const home = !selected && !activeWorkspace
   const draftKey = selected || `new:${workspaceId || ''}`
   const draft = drafts[draftKey] || ''
@@ -237,21 +263,37 @@ export function App() {
     if (!booted.current) setRuntime({ state: 'starting', error: null })
     api<Bootstrap>('/bootstrap').then(value => {
       if (cancelled) return
+      const instanceChanged = serverToken.current !== null && serverToken.current !== value.token
+      serverToken.current = value.token
+      if (instanceChanged) {
+        for (const request of threadReads.current.values()) request.controller.abort()
+        threadReads.current.clear()
+        // Native projection revisions restart with the HTTP service. Keep the
+        // last rendered content while allowing its replacement from revision 0.
+        updateViews(previous => Object.fromEntries(Object.entries(previous).map(([id, view]) => [id, { ...view, revision: -1 }])))
+      }
       setToken(value.token); setError(''); setBoot(value); setRuntime(value.runtime); setThreads(value.threads)
       if (!pendingPrefs.current) setPrefs(value.preferences || defaultPreferences)
       setSessionOptions(value.sessionOptions || {}); setQueue(value.queue || [])
       if (!booted.current) setInspector(value.preferences?.showInspector ?? false)
       setWorkspaces(value.workspaces || []); setPluginEnabled(value.plugins?.todoNote ?? true)
       const previous = localValue('cweb:thread', localValue('dsh-local-thread', ''))
-      if (!booted.current && previous && value.threads.some(thread => thread.id === previous)) setSelected(previous)
+      if (!booted.current && previous && restoreEligible.current) {
+        if (value.threads.some(thread => thread.id === previous)) { setSelected(previous); restoreEligible.current = false }
+        else pendingRestoreCandidate.current = previous
+      }
       booted.current = true
       const events = new EventSource('/api/events')
       source.current = events
+      let opened = false
       events.onopen = () => {
         if (cancelled) return
         clearTimeout(recovery); recovery = undefined; if (value.runtime.state === 'ready') reconnectAttempts.current = 0; setStreamConnected(true)
         const id = selectedRef.current
-        if (id) void api<ThreadView>(`/threads/${encodeURIComponent(id)}`).then(value => { if (!cancelled) updateViews(previous => mergeView(previous, value)) }).catch(() => {})
+        // Bootstrap/selection already fetches the first view. Only a native SSE
+        // reconnection needs this extra read to recover events it missed.
+        if (opened && id) void readThread(id).promise.then(value => { if (!cancelled) updateViews(previous => mergeView(previous, value)) }).catch(() => {})
+        opened = true
       }
       events.onerror = () => {
         if (cancelled || recovery) return
@@ -268,11 +310,18 @@ export function App() {
           if (!current || (current.revision < value.revision && current.revision !== value.baseRevision)) {
             if (!resyncing.current.has(value.id)) {
               resyncing.current.add(value.id)
-              void api<ThreadView>(`/threads/${encodeURIComponent(value.id)}/snapshot`).then(snapshot => { if (!cancelled) updateViews(previous => mergeView(previous, snapshot)) }).catch(() => {}).finally(() => resyncing.current.delete(value.id))
+              const snapshot = current ? api<ThreadView>(`/threads/${encodeURIComponent(value.id)}/snapshot`) : readThread(value.id).promise
+              void snapshot.then(snapshot => { if (!cancelled) updateViews(previous => mergeView(previous, snapshot)) }).catch(() => {}).finally(() => resyncing.current.delete(value.id))
             }
           } else updateViews(previous => applyThreadPatch(previous, value))
         }
-        else if (value.type === 'threads') setThreads(value.threads)
+        else if (value.type === 'threads') {
+          setThreads(value.threads)
+          const candidate = pendingRestoreCandidate.current
+          if (restoreEligible.current && candidate && !selectedRef.current && value.threads.some(thread => thread.id === candidate)) {
+            pendingRestoreCandidate.current = null; restoreEligible.current = false; setSelected(candidate)
+          }
+        }
         else if (value.type === 'approvals') setApprovals(value.approvals)
         else if (value.type === 'runtime') { setRuntime(value.runtime); if (value.runtime.state === 'failed') scheduleReconnect() }
         else if (value.type === 'workspaces') setWorkspaces(value.workspaces)
@@ -289,14 +338,15 @@ export function App() {
   useEffect(() => {
     if (!selected || !boot) return
     let cancelled = false
-    setLoadingThread(!viewsRef.current[selected]); if (lastOpened.current !== selected) follow.current = true
+    setThreadLoadError(null); if (lastOpened.current !== selected) follow.current = true
     lastOpened.current = selected
-    api<ThreadView>(`/threads/${encodeURIComponent(selected)}`).then(value => {
+    const request = readThread(selected)
+    request.promise.then(value => {
       if (!cancelled) updateViews(previous => mergeView(previous, value))
-    }).catch(error => { if (!cancelled) setError(message(error)) }).finally(() => { if (!cancelled) setLoadingThread(false) })
+    }).catch(error => { if (!cancelled && !request.controller.signal.aborted) setThreadLoadError({ id: selected, text: message(error) }) })
     try { localStorage.setItem('cweb:thread', selected); localStorage.removeItem('dsh-local-thread') } catch { /* Resume selection is optional. */ }
-    return () => { cancelled = true }
-  }, [selected, boot])
+    return () => { cancelled = true; request.controller.abort() }
+  }, [selected, boot, threadRetry, readThread])
 
   useEffect(() => {
     if (settings || workspaceDialog || renameDialog) dialog.current?.showModal()
@@ -378,11 +428,11 @@ export function App() {
   }, [])
   useEffect(() => {
     setGenuiPanels([])
-    if (!selected || !prefs.genui || !boot) return
+    if (!selected || !thread || !prefs.genui || !boot) return
     let cancelled = false
     void api<{ panels: GenuiPanelInfo[] }>(`/plugins/genui/${encodeURIComponent(selected)}`).then(value => { if (!cancelled) setGenuiPanels(value.panels) }).catch(() => {})
     return () => { cancelled = true }
-  }, [selected, prefs.genui, boot])
+  }, [selected, Boolean(thread), prefs.genui, boot])
   async function handoff() {
     if (!selected || handoffBusy) return
     setHandoffBusy(true); setError('')
@@ -521,12 +571,13 @@ export function App() {
 
   function closeDialogs() { if (settings || workspaceDialog || renameDialog) dialogExit.exit() }
   function newThread(id: string | null = activeWorkspace?.id || null) {
+    cancelPendingRestore()
     setWorkspaceId(id)
     setSelected(null); setSidebar(false); setError(''); follow.current = true
     try { localStorage.removeItem('cweb:thread'); localStorage.removeItem('dsh-local-thread') } catch { /* No effect on conversation history. */ }
     requestAnimationFrame(() => composer.current?.focus())
   }
-  function setDraft(value: string) { setDrafts(previous => ({ ...previous, [draftKey]: value })) }
+  function setDraft(value: string) { cancelPendingRestore(); setDrafts(previous => ({ ...previous, [draftKey]: value })) }
   function cancelEdit() {
     if (!editing || busy) return
     const saved = editing.saved
@@ -571,7 +622,7 @@ export function App() {
     try { localStorage.setItem('cweb:loading-style', value) } catch { setToast('本次选择已生效，浏览器未能保存设置') }
   }
   function addWorkspaceDialog() { setError(''); setDirectoryDraft(''); setNameDraft(''); setWorkspaceEditing(null); setWorkspaceDialog(true) }
-  function chooseThread(id: string) { window.dispatchEvent(new CustomEvent(threadReadEvent, { detail: id })); setWorkspaceId(workspaceFor(workspaces, threads.find(row => row.id === id)?.cwd || '')?.id || null); setSelected(id); setSidebar(false); setError('') }
+  function chooseThread(id: string) { cancelPendingRestore(); window.dispatchEvent(new CustomEvent(threadReadEvent, { detail: id })); setWorkspaceId(workspaceFor(workspaces, threads.find(row => row.id === id)?.cwd || '')?.id || null); setSelected(id); setSidebar(false); setError('') }
 
   async function submit(queued = false) {
     if ((!draft.trim() && !files.length && !skills.length && !references.length) || busy || sending.current || pendingMessage || !connected || !activeWorkspace || uploads[draftKey] || thread?.externalOwner) return
@@ -711,7 +762,7 @@ export function App() {
   function openSidebarNavigation() { setSidebarCollapsed(false); setSidebar(mobile); try { localStorage.setItem('cweb:sidebar-collapsed', 'false') } catch {} }
   function jumpToNotice(id: string) { setSearch(''); chooseThread(id); openSidebarNavigation(); setRevealThread({ id, seq: ++revealSequence.current }) }
   const toggleSidebar = () => { setSidebar(false); setSidebarCollapsed(value => { try { localStorage.setItem('cweb:sidebar-collapsed', String(!value)) } catch {} return !value }) }
-  return <FilePreviewProvider workspaceId={activeWorkspace?.id} root={activeWorkspace?.path} cwd={activeCwd}><ChoiceProvider threadId={selected || ''} activeMessageId={activeChoiceMessage} message={thread?.items.find(item => item.id === activeChoiceMessage)} onAnswer={choiceAnswer}><GenuiProvider threadId={selected || ""} enabled={prefs.genui} streaming={running} onAction={genuiAction} onOpen={openGenui}><div style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties} className={`app ${sidebarResizing ? 'sidebar-resizing' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${(inspector && activeWorkspace) || genuiOpen ? '' : 'inspector-hidden'}`}>
+  return <FilePreviewProvider workspaceId={activeWorkspace?.id} root={activeWorkspace?.path} cwd={activeCwd}><ChoiceProvider threadId={selected || ''} activeMessageId={activeChoiceMessage} message={thread?.items.find(item => item.id === activeChoiceMessage)} onAnswer={choiceAnswer}><GenuiProvider threadId={selected || ""} enabled={prefs.genui} streaming={running} onAction={genuiAction} onOpen={openGenui}><div onInputCapture={cancelPendingRestore} style={{ '--sidebar-width': `${sidebarWidth}px` } as CSSProperties} className={`app ${sidebarResizing ? 'sidebar-resizing' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${(inspector && activeWorkspace) || genuiOpen ? '' : 'inspector-hidden'}`}>
     <Presence show={sidebar} className="sidebar-backdrop" role="button" tabIndex={0} aria-label="关闭会话列表" onClick={() => setSidebar(false)} onKeyDown={event => { if (['Enter', ' '].includes(event.key)) setSidebar(false) }}>{null}</Presence>
     <aside className={`sidebar ${sidebar ? 'shown' : ''}`} aria-label="会话列表" aria-hidden={mobile ? !sidebar : sidebarCollapsed} {...((mobile ? !sidebar : sidebarCollapsed) ? { inert: '' } : {})}><div className="sidebar-content">
       <div className="brand"><BrandMark size={42} /><div><strong>cweb</strong><span>Codex 工作台</span></div></div>
@@ -725,16 +776,18 @@ export function App() {
     </aside>
 
     <main className={`main ${dropping ? 'dragging-files' : ''}`} ref={main} onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current++; setDropping(true) } }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }} onDragLeave={event => { if (event.dataTransfer.types.includes('Files') && --dragDepth.current <= 0) { dragDepth.current = 0; setDropping(false) } }} onDrop={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current = 0; setDropping(false); void addFiles(Array.from(event.dataTransfer.files)) } }} >
-      <Presence show={dropping} className="file-drop-overlay"><Upload size={32} /><strong>松开以添加附件</strong><span>图片与文件 · 每个不超过 20 MB</span></Presence><header className="topbar"><IconButton label="打开会话列表" className="mobile-menu" onClick={() => setSidebar(true)}><Menu size={18} /></IconButton><IconButton label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} className="desktop-sidebar-toggle" onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</IconButton><div className="breadcrumb"><Folder size={15} /><button className="breadcrumb-home" onClick={() => newThread(null)} disabled={busy}>工作区</button>{!home && <><span className="slash">/</span><span>{activeWorkspace?.name || baseName(activeCwd)}</span><span className="slash">/</span><strong>{thread?.title || '新会话'}</strong></>}</div><div className="topbar-actions">{prefs.genui && <IconButton label="GenUI 交互面板" onClick={openGenui}><Braces size={17} /></IconButton>}<IconButton label="快捷命令" onClick={() => setPalette('commands')}><Command size={16} /></IconButton>{selected && <>{boot?.capabilities?.nativeActions && <IconButton label="分支与原生审查" onClick={() => setNativeAction({ kind: 'fork', threadId: selected })}><GitBranch size={16} /></IconButton>}<IconButton label="复制终端继续命令" disabled={running || busy} onClick={() => void terminalResume()}><SquareTerminal size={16} /></IconButton><IconButton label="重命名会话" onClick={() => { setNameDraft(thread?.title || ''); setRenameDialog(true) }}><Pencil size={15} /></IconButton><IconButton label="归档会话" onClick={() => void archive()} disabled={running || Boolean(thread?.externalOwner)}><Archive size={15} /></IconButton></>}<span className={`badge local-badge run-badge ${running ? 'is-running' : ''}`} role="status"><span className={`status-dot ${currentApprovals.length || thread?.choicePending ? 'waiting' : thread?.status === 'completed' ? 'complete' : ''}`} />{currentApprovals.length ? '待确认' : thread?.choicePending ? '待回复' : running ? activeRunStage === 'compacting' ? '压缩中' : activeRunStage === 'retrying' ? '重试中' : '处理中' : thread?.status === 'completed' ? '已完成' : thread?.status === 'failed' ? '已失败' : thread?.status === 'interrupted' ? '已停止' : '本地'}</span><IconButton disabled={!activeWorkspace} label={inspector ? '隐藏工作区面板' : '显示工作区面板'} onClick={toggleInspector}><PanelRight size={17} /></IconButton></div></header>
+      <Presence show={dropping} className="file-drop-overlay"><Upload size={32} /><strong>松开以添加附件</strong><span>图片与文件 · 每个不超过 20 MB</span></Presence><header className="topbar"><IconButton label="打开会话列表" className="mobile-menu" onClick={() => setSidebar(true)}><Menu size={18} /></IconButton><IconButton label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} className="desktop-sidebar-toggle" onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</IconButton><div className="breadcrumb"><Folder size={15} /><button className="breadcrumb-home" onClick={() => newThread(null)} disabled={busy}>工作区</button>{!home && <><span className="slash">/</span><span>{activeWorkspace?.name || baseName(activeCwd)}</span><span className="slash">/</span><strong>{thread?.title || selectedSummary?.title || '新会话'}</strong></>}</div><div className="topbar-actions">{prefs.genui && <IconButton label="GenUI 交互面板" onClick={openGenui}><Braces size={17} /></IconButton>}<IconButton label="快捷命令" onClick={() => setPalette('commands')}><Command size={16} /></IconButton>{selected && <>{boot?.capabilities?.nativeActions && <IconButton label="分支与原生审查" onClick={() => setNativeAction({ kind: 'fork', threadId: selected })}><GitBranch size={16} /></IconButton>}<IconButton label="复制终端继续命令" disabled={running || busy} onClick={() => void terminalResume()}><SquareTerminal size={16} /></IconButton><IconButton label="重命名会话" onClick={() => { setNameDraft(thread?.title || ''); setRenameDialog(true) }}><Pencil size={15} /></IconButton><IconButton label="归档会话" onClick={() => void archive()} disabled={running || Boolean(thread?.externalOwner)}><Archive size={15} /></IconButton></>}<span className={`badge local-badge run-badge ${running ? 'is-running' : ''}`} role="status"><span className={`status-dot ${currentApprovals.length || thread?.choicePending ? 'waiting' : thread?.status === 'completed' ? 'complete' : ''}`} />{loadingThread ? '载入中' : currentApprovals.length ? '待确认' : thread?.choicePending ? '待回复' : running ? activeRunStage === 'compacting' ? '压缩中' : activeRunStage === 'retrying' ? '重试中' : '处理中' : thread?.status === 'completed' ? '已完成' : thread?.status === 'failed' ? '已失败' : thread?.status === 'interrupted' ? '已停止' : '本地'}</span><IconButton disabled={!activeWorkspace} label={inspector ? '隐藏工作区面板' : '显示工作区面板'} onClick={toggleInspector}><PanelRight size={17} /></IconButton></div></header>
       <div className="conversation-stage"><div className="conversation" ref={transcript} tabIndex={0} aria-label="会话内容"><div ref={transcriptContent} className="conversation-content">
         {home ? !boot ? <div className="workspace-home workspace-loading" role="status" aria-label="正在加载工作区"><BrandMark size={26} /><p>正在载入工作台…</p><div className="conversation-skeleton" aria-hidden="true"><i /><i /><i /></div></div> : <WorkspaceHome workspaces={workspaces} threads={threads} onOpen={newThread} onAdd={addWorkspaceDialog} onThread={chooseThread} /> : !selected ? pendingMessage ? <div className="transcript"><TranscriptItem item={pendingMessage.item} /></div> : <div className="welcome"><div className="welcome-eyebrow"><span />你的代码，你的工作区</div><h1>让想法，<br /><span>在这里开始。</span></h1><p>与 Codex 一起理解、构建和打磨项目。<br />每一次执行，都在你的本机。</p><div className="starter-grid">{starters.map(starter => <button key={starter.title} className="starter" onClick={() => { setDraft(starter.prompt); requestAnimationFrame(() => composer.current?.focus()) }}><div className="starter-icon">{starter.icon}<ArrowRight size={14} /></div><strong>{starter.title}</strong><span>{starter.detail}</span></button>)}</div><div className="welcome-note"><ShieldCheck size={14} />执行前可审批，过程可查看，随时可停止</div></div>
-          : <Transcript key={selected} thread={displayedThread} loading={loadingThread} approvals={currentApprovals.length} expanded={prefs.showActivityDetails} collapseTiming={prefs.activityCollapseTiming || 'next-input'} jumpTo={jumpTarget} follow={follow} paused={awayFromBottom || historyNavigation} onEdit={editMessage} onFork={boot?.capabilities?.nativeActions ? forkMessage : undefined} editDisabled={busy || Boolean(pendingMessage)} />}
+          : !thread && threadLoadError?.id === selected ? <div className="thread-empty" role="status"><p>会话暂未载入，请重试。</p></div>
+          : <Transcript key={selected} thread={displayedThread} loading={loadingThread} onLoadOlder={loadOlderHistory} approvals={currentApprovals.length} expanded={prefs.showActivityDetails} collapseTiming={prefs.activityCollapseTiming || 'next-input'} jumpTo={jumpTarget} follow={follow} paused={awayFromBottom || historyNavigation} onEdit={editMessage} onFork={boot?.capabilities?.nativeActions ? forkMessage : undefined} editDisabled={busy || Boolean(pendingMessage)} />}
       </div></div><div className="composer-dock" ref={composerDock}><div className={`composer-region ${home ? 'home-notices' : ''}`}>
-        {!home && boot?.capabilities?.goals && <GoalPanel ref={goalPanel} threadId={selected} update={goalUpdate} running={running} latestTaskAt={thread?.items.findLast(item => item.type === 'userMessage')?.timestamp || thread?.runs?.at(-1)?.startedAt} ensureThread={ensureGoalThread} onStart={startGoal} />}
+        {!home && boot?.capabilities?.goals && <GoalPanel ref={goalPanel} threadId={selected} historyReady={Boolean(thread)} update={goalUpdate} running={running} latestTaskAt={thread?.items.findLast(item => item.type === 'userMessage')?.timestamp || thread?.runs?.at(-1)?.startedAt} ensureThread={ensureGoalThread} onStart={startGoal} />}
         {thread?.forkedFromId && <button type="button" className="fork-source" onClick={() => chooseThread(thread.forkedFromId!)}><GitBranch size={13} />查看来源话题</button>}
         {!home && currentOptions.collaborationMode === 'plan' && <div className="plan-mode-banner"><GitBranch size={15} /><span>规划模式 · 先调查并形成方案</span><button type="button" onClick={() => changeOptions({ collaborationMode: 'default' })}>切回执行</button></div>}
         {(awayFromBottom || historyNavigation) && !home && <button type="button" className="scroll-to-bottom" onClick={showLatest}><ArrowDown size={15} />回到底部</button>}
         {error && <Notice text={error} onClose={() => setError('')} />}
+        {threadLoadError?.id === selected && <div className="connection-notice" role="alert"><span>{threadLoadError.text}</span><button type="button" disabled={!connected} onClick={() => { setThreadLoadError(null); setThreadRetry(value => value + 1) }}>重试载入会话</button></div>}
         <ConnectionNotice online={online} connected={connected} runtime={runtime} onReconnect={() => setReload(value => value + 1)} onDetails={() => openSettings('connection')} />
         <Presence show={Boolean(toast)} className="toast" role="status"><Check size={14} />{toast}</Presence>
         {thread?.externalOwner && <div className="connection-notice session-notice"><span>这个会话的任务仍在另一端执行，结束后可在网页继续。</span><button disabled={handoffBusy} onClick={() => void handoff()}>{handoffBusy ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}检查并在网页继续</button></div>}
@@ -751,7 +804,7 @@ export function App() {
           files={files} onFiles={files => void addFiles(files)} onRemove={id => setFileDrafts(previous => ({ ...previous, [draftKey]: files.filter(file => file.id !== id) }))} uploading={Boolean(uploads[draftKey])}
           skills={skills} skillIndex={availableSkills} skillsLoading={skillsLoading} onRefreshSkills={() => setSkillsRevision(value => value + 1)} onToggleSkill={toggleSkill} onSkills={() => void selectSkills()} onRemoveSkill={path => setSkillDrafts(previous => ({ ...previous, [draftKey]: skills.filter(skill => skill.path !== path) }))}
           workspaceId={activeWorkspace?.id} referenceIndexReady={boot?.capabilities?.fileReferences} references={references} onToggleReference={toggleReference}
-          history={history} running={running} busy={busy || pendingMessage?.state === 'syncing'} disabled={!connected || !activeWorkspace || Boolean(thread?.externalOwner) || Boolean(pendingMessage) || Boolean(thread?.compacting || selected && compactPending[selected])} onSubmit={queued => void submit(queued)} onInterrupt={() => void interrupt()} onCommand={runCommand}
+          history={history} running={running} busy={busy || pendingMessage?.state === 'syncing'} disabled={!connected || !activeWorkspace || Boolean(selected && !thread) || Boolean(thread?.externalOwner) || Boolean(pendingMessage) || Boolean(thread?.compacting || selected && compactPending[selected])} onSubmit={queued => void submit(queued)} onInterrupt={() => void interrupt()} onCommand={runCommand}
           queue={queue.filter(row => row.threadId === selected)} onQueue={(id, retry) => void api(`/queue/${id}/${retry ? 'retry' : 'remove'}`, {}).catch(error => setError(message(error)))} />}
 
       </div></div>{thread && <TurnNavigator items={thread.items} viewport={transcript} onNavigate={navigateMessage} />}<ThreadNotices notices={notices} workspaces={workspaces} onJump={jumpToNotice} onDismiss={dismissNotice} /></div>

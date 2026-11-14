@@ -32,7 +32,18 @@ export class RunHistory {
   async save(thread: ThreadView) {
     const runs = structuredClone((thread.runs || []).slice(-1000)); const times: z.infer<typeof schema>['times'] = {}
     for (const item of thread.items.slice(-20_000)) if (item.timestamp && item.timeSource && ['userMessage', 'agentMessage'].includes(item.type)) times[item.id] = { timestamp: item.timestamp, timeSource: item.timeSource }
-    await this.store(thread.id).update(data => { data.runs = runs; data.times = times; data.totalTokens = thread.tokens; data.tokenUsageKnown = Boolean(thread.tokenUsageKnown); data.lastTurnId = runs.at(-1)?.id || ''; data.contextUsage = thread.contextUsage || undefined })
+    await this.store(thread.id).update(data => {
+      if (thread.history?.hasOlder && runs.length) {
+        const incoming = new Set(runs.map(run => run.id)), firstMatch = data.runs.findIndex(run => incoming.has(run.id)), oldest = runs[0].startedAt
+        // A partial tail may not erase metadata belonging to older, unloaded
+        // turns. Retain only its earlier prefix, never future runs discarded
+        // by an explicit native revert.
+        const prefix = data.runs.filter((run, index) => !incoming.has(run.id) && (firstMatch >= 0 ? index < firstMatch : oldest && run.startedAt && run.startedAt < oldest))
+        data.runs = [...prefix, ...runs].slice(-1000)
+        data.times = Object.fromEntries(Object.entries({ ...data.times, ...times }).slice(-20_000))
+      } else { data.runs = runs; data.times = times }
+      data.totalTokens = thread.tokens; data.tokenUsageKnown = Boolean(thread.tokenUsageKnown); data.lastTurnId = runs.at(-1)?.id || ''; data.contextUsage = thread.contextUsage || undefined
+    })
   }
   async flush() { await Promise.all([...this.stores.values()].map(store => store.read())) }
 }

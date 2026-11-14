@@ -7,6 +7,7 @@ import { CodexRpc } from '../server/rpc.ts'
 import { Bridge } from '../server/bridge.ts'
 import { Workspace } from '../server/workspace.ts'
 import { createHttpServer } from '../server/http.ts'
+import { loadFixtureHistory } from './history-fixture.ts'
 
 const output = resolve('test-results'); await mkdir(output, { recursive: true })
 const root = await mkdtemp(resolve(output, 'collapse-')), cwd = resolve(root, 'project'); await mkdir(cwd)
@@ -56,6 +57,9 @@ await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${app.server.address().port}`
 const browser = await chromium.launch({ executablePath: process.env.BROWSER_EXECUTABLE || '/usr/bin/microsoft-edge', headless: true, ignoreDefaultArgs: ['--headless=old'], args: ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage'] })
 const page = await browser.newPage({ viewport: { width: 1366, height: 900 }, reducedMotion: 'reduce' }), errors = []
+const trace = []; let stage = 'initial'
+page.on('request', request => { const path = new URL(request.url()).pathname; if (path.startsWith('/api/threads/')) trace.push({ at: Date.now(), stage, request: path, method: request.method() }) })
+bridge.on('event', event => { if (event.type === 'thread' && event.thread.id === id || event.type === 'threadPatch' && event.id === id) trace.push({ at: Date.now(), stage, event: event.type, revision: event.revision || event.thread?.revision, runs: bridge.threads.get(id)?.runs?.map(run => run.id), items: bridge.threads.get(id)?.items.length }) })
 page.on('pageerror', error => errors.push(error.message))
 const input = page.getByLabel('发送给 Codex 的消息', { exact: true })
 const first = page.locator('.activity-group[data-turn-id="first-turn"] [data-disclosure-row]')
@@ -79,7 +83,7 @@ async function setting(value) {
 try {
   await page.goto(base); await page.getByRole('button', { name: /工作步骤收起验证/ }).first().click()
   await first.waitFor(); await setting()
-  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), 'ultra', 'The composer keeps the requested CLI effort spelling without changing its protocol value')
+  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), 'Ultra', 'The composer title-cases the display without changing its protocol value')
   await page.keyboard.press('Control+,')
   await page.getByRole('button', { name: '模型与权限', exact: true }).click()
   for (const label of ['默认推理强度', '当前会话推理强度']) {
@@ -156,12 +160,22 @@ try {
   await subagent.locator('summary').waitFor()
 
   await setting('completion')
+  stage = 'completion-third-turn'
   await input.fill('排版测试'); await input.press('Enter')
+  await until(() => bridge.threads.get(id)?.runs?.length === 3 && !bridge.threads.get(id)?.turnId, 'The third turn did not finish')
+  const repair = await (await page.request.get(`${base}/api/threads/${id}/snapshot`)).json()
+  assert.ok(repair.items.some(item => item.id === 'first-reason'), 'SSE snapshot repair dropped already-read historical steps')
   await until(async () => await groups.count() === 2)
   await until(() => !bridge.threads.get(id)?.turnId)
+  await until(async () => await groups.last().getAttribute('aria-expanded') === 'false', 'The native completion did not reach the step disclosure')
   assert.equal(await groups.last().getAttribute('aria-expanded'), 'false', 'Completion mode must fold finished steps')
   await page.locator('.agent-message pre').filter({ hasText: 'const formula' }).waitFor()
-  await page.reload(); await first.waitFor()
+  stage = 'reload'
+  await page.reload()
+  await page.locator('.agent-message pre').filter({ hasText: 'const formula' }).waitFor()
+  // A cold open now intentionally returns only recent turns. This fixture's
+  // remaining assertions inspect older groups, so explicitly request history.
+  await loadFixtureHistory(bridge, id); await first.waitFor()
   assert.equal(await groups.last().getAttribute('aria-expanded'), 'false', 'The saved completion policy must survive refresh')
 
   await setting('never')
@@ -180,6 +194,7 @@ try {
   await until(async () => await groups.last().getAttribute('aria-expanded') === 'false')
   assert.equal(await first.getAttribute('aria-expanded'), 'true', 'A manual history expansion must remain open when new input arrives')
   await rpc.call('test/finish', { threadId: id }); await until(() => !bridge.threads.get(id)?.turnId)
+  await loadFixtureHistory(bridge, groupedId)
   await page.getByRole('button', { name: /同轮多次提问验证/ }).first().click()
   const activity = itemId => page.locator(`.activity-group[data-activity-id="${itemId}"] [data-disclosure-row]`)
   await activity('latest-step').waitFor()
@@ -206,5 +221,5 @@ try {
   await page.screenshot({ path: resolve(output, 'activity-collapse-steering-running.png'), fullPage: true })
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ defaultNextInput: true, completion: true, never: true, persisted: true, manualHistoryOverride: true, rawCommandsCollapsed: true, finalCodeVisible: true, completeProcessGrouped: true, outerBodyLazy: true, leafBodiesLazy: true, animatedExitRetained: true, quickReopenRetained: true, nativeActivitiesGrouped: true, nativeHeadingsLocalized: true, rawProtocolIntact: true, effortLocalized: true, sameTurnSegments: true, historicalFailuresFolded: true, mixedRunningGroupVisible: true, pageErrors: errors }))
-} catch (error) { await page.screenshot({ path: resolve(output, 'activity-collapse-failure.png'), fullPage: true }).catch(() => {}); throw error }
+} catch (error) { await writeFile(resolve(output, 'activity-collapse-trace.json'), JSON.stringify(trace, null, 2)); await page.screenshot({ path: resolve(output, 'activity-collapse-failure.png'), fullPage: true }).catch(() => {}); throw error }
 finally { await browser.close(); await app.close(); await rm(root, { recursive: true, force: true }) }
