@@ -13,7 +13,7 @@ export const defaultPreferences: Preferences = { model: '', effort: '', mode: 'w
   theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: false, genui: true, showActivityDetails: true, activityCollapseTiming: 'next-input', autoRecovery: true, imageInputMode: 'on-demand' }
 export interface UsageWindow { usedPercent: number; windowDurationMins?: number | null; resetsAt?: number | null }
 export interface UsageLimits { limitName?: string | null; primary?: UsageWindow | null; secondary?: UsageWindow | null; credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | null } | null }
-export interface AccountStatus { accountType: string; planType: string; limits: UsageLimits[]; error?: string }
+export interface AccountStatus { accountType: string; planType: string; limits: UsageLimits[]; error?: string; updatedAt?: number; stale?: boolean }
 export interface AttachmentInfo { id: string; name: string; size: number; kind: 'image' | 'file'; url: string }
 export interface GenuiPanelInfo { id: string; title: string; spec: unknown; updatedAt: number }
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'

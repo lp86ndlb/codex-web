@@ -21,6 +21,7 @@ import { SessionContextStore } from './session-context.ts'
 import { ConnectionDiagnostics } from './diagnostics.ts'
 import { SubmissionJournal } from './submissions.ts'
 import { parseElicitation, validateElicitation } from '../shared/elicitation.ts'
+import { AccountUsage } from './account-usage.ts'
 
 interface PendingRequest { wireId: string | number; approval: Approval; params: Record<string, unknown> }
 interface RecoverySource { input?: MessageInput; sourceTurnId: string; retryTurnId?: string; attempt: number; failure: string; blocked?: boolean; starting?: boolean; timer?: ReturnType<typeof setTimeout> }
@@ -38,6 +39,7 @@ export class Bridge extends EventEmitter {
   metrics: RunHistory
   diagnostics: ConnectionDiagnostics
   submissions: SubmissionJournal
+  private accountUsage: AccountUsage
   codexHome: string
   readonly dataDirectory: string
   readonly sharedHistory: boolean
@@ -91,6 +93,7 @@ export class Bridge extends EventEmitter {
     this.metrics = new RunHistory(resolve(dataDirectory, 'run-history'))
     this.diagnostics = new ConnectionDiagnostics(rpc)
     this.submissions = new SubmissionJournal(resolve(dataDirectory, 'submission-receipts.json'))
+    this.accountUsage = new AccountUsage(rpc)
     this.sessionContexts = new SessionContextStore(resolve(dataDirectory, 'session-context.json'))
     rpc.on('notification', message => this.notification(record(message)))
     rpc.on('request', message => this.request(record(message)))
@@ -144,7 +147,7 @@ export class Bridge extends EventEmitter {
   }
   private async captureQuota(): Promise<QuotaSnapshot | undefined> {
     let timer: ReturnType<typeof setTimeout> | undefined
-    try { return await Promise.race([this.rpc.call('account/rateLimits/read', {}).then(quotaSnapshot).catch(() => undefined), new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 1200) })]) }
+    try { return await Promise.race([this.rpc.call('account/rateLimits/read', { excludeResetCreditDetails: true }).then(quotaSnapshot).catch(() => undefined), new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 1200) })]) }
     finally { clearTimeout(timer) }
   }
   private saveRunMetadata(thread: ThreadView, turnId: string) {
@@ -181,18 +184,7 @@ export class Bridge extends EventEmitter {
       throw error
     }
   }
-  async accountStatus() {
-    const [accountResult, limitsResult] = await Promise.allSettled([
-      this.rpc.call('account/read', { refreshToken: false }), this.rpc.call('account/rateLimits/read', {}),
-    ])
-    const account = accountResult.status === 'fulfilled' ? record(record(accountResult.value).account) : {}
-    const raw = limitsResult.status === 'fulfilled' ? record(limitsResult.value) : {}
-    const byId = Object.values(record(raw.rateLimitsByLimitId)).map(record)
-    const rows = byId.length ? byId : raw.rateLimits ? [record(raw.rateLimits)] : []
-    return { accountType: string(account.type), planType: string(account.planType), limits: rows.map(row => ({
-      limitName: string(row.limitName) || string(row.limitId) || 'Codex', primary: row.primary || null, secondary: row.secondary || null, credits: row.credits || null,
-    })), ...(limitsResult.status === 'rejected' ? { error: '当前登录方式或引擎未提供额度信息' } : {}) }
-  }
+  accountStatus() { return this.accountUsage.read() }
   async addWorkspace(path: string, name?: string) {
     const entry = await this.catalog.add(path, name)
     this.publish({ type: 'workspaces', workspaces: this.catalog.list() }); return entry

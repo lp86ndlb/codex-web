@@ -31,7 +31,8 @@ export function StatusPanel({ model, tokens, compact = false }: { model?: string
     <div className="usage-heading"><h4>使用额度</h4><button type="button" onClick={() => setRefresh(n => n + 1)} disabled={loading}><RefreshCw size={15} className={loading ? 'spin' : ''} />刷新</button></div>
     {error && <p role="alert" className="settings-footnote">{error}</p>}{value?.error && <p className="settings-footnote">{value.error}</p>}
     {value?.limits.map((limit, index) => <section key={`${limit.limitName}-${index}`} className="usage-group"><strong>{limit.limitName || 'Codex'}</strong>{limit.primary && <WindowUsage window={limit.primary} name="主要额度" />}{limit.secondary && <WindowUsage window={limit.secondary} name="次要额度" />}{limit.credits && <small>{limit.credits.unlimited ? '额度：无限' : limit.credits.balance ? `余额：${limit.credits.balance}` : limit.credits.hasCredits ? '有可用额度' : '无可用额度'}</small>}</section>)}
-    {!loading && value && !value.limits.length && <p className="settings-empty">当前账户没有返回可显示的额度数据。</p>}{loading && !value && <p className="settings-empty">正在读取账户状态…</p>}
+    {value?.updatedAt && <p className="usage-footnote" role="status">{value.stale ? '上次成功读取' : '更新于'} · {new Date(value.updatedAt).toLocaleTimeString('zh-CN')}{value.stale ? ' · 当前刷新未成功' : ''}</p>}
+    {!loading && value && !value.limits.length && !value.error && <p className="settings-empty">当前账户没有返回可显示的额度数据。</p>}{loading && !value && <p className="settings-empty">正在读取账户状态…</p>}
     {compact && <p className="usage-footnote">{value?.planType ? `${value.planType} · ` : ''}来自 Codex · 每分钟更新</p>}
   </>
 }

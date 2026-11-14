@@ -112,7 +112,7 @@ try {
   assert.ok(exit.some(f=>f.y>1&&f.opacity>0&&f.opacity<.95),JSON.stringify(exit));await popup.waitFor({state:'hidden'})
   await model.press('ArrowDown');await model.press('ArrowDown');await model.press('Enter');await until(async()=>(await model.textContent())==='测试模型')
   await model.click();await page.keyboard.press('Control+k');await popup.waitFor({state:'hidden'});assert.equal(await input.evaluate(n=>n===document.activeElement),true)
-  await page.getByRole('combobox',{name:'推理强度',exact:true}).click();await page.getByRole('option',{name:'medium',exact:true}).click()
+  await page.getByRole('combobox',{name:'推理强度',exact:true}).click();await page.getByRole('option',{name:'Medium',exact:true}).click()
 
   await rpc.call('test/append',{threadId:id,text:'最终回复的代码：\n```bash\nnode --version\n```',phase:'final_answer'})
   const finalCode=page.locator('.agent-message:not(.agent-commentary) .genui-code').filter({hasText:'node --version'});await finalCode.locator('pre').waitFor();assert.equal(await finalCode.evaluate(n=>n.tagName),'DIV')

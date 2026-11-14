@@ -234,7 +234,7 @@ try {
   assert.equal(compactRequests.length, legacyCompactRequests, 'Legacy bootstrap capabilities must block the ordinary command path too')
   assert.equal(messageRequests.length, 0)
 
-  // Composer effort names match the CLI's enum spelling, while the default
+  // Composer effort names use capitalized English, while the default
   // choice and other controls stay Chinese. Selecting a label must preserve
   // the underlying option value and the independently selected model.
   const effort = page.getByRole('combobox', { name: '推理强度', exact: true })
@@ -247,13 +247,13 @@ try {
   await effort.click()
   const effortOptions = page.getByRole('listbox', { name: '推理强度选项', exact: true })
   await effortOptions.waitFor()
-  assert.deepEqual((await effortOptions.getByRole('option').allTextContents()).map(text => text.trim()), ['默认强度', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+  assert.deepEqual((await effortOptions.getByRole('option').allTextContents()).map(text => text.trim()), ['默认强度', 'Low', 'Medium', 'High', 'Xhigh', 'Max', 'Ultra'])
   const changedOptions = page.waitForResponse(response => new URL(response.url()).pathname === `/api/threads/${a}/options` && response.request().method() === 'POST')
-  await effortOptions.getByRole('option', { name: 'ultra', exact: true }).click()
+  await effortOptions.getByRole('option', { name: 'Ultra', exact: true }).click()
   const snapshot = await (await changedOptions).json()
   assert.equal(snapshot.sessionOptions[a].effort, 'ultra')
   assert.equal(snapshot.sessionOptions[a].model, modelBefore)
-  await until(async () => (await effort.textContent()).trim() === 'ultra')
+  await until(async () => (await effort.textContent()).trim() === 'Ultra')
   assert.equal((await model.textContent()).trim(), 'CLI 默认模型')
   await open()
   await panel.getByText(legacyReason, { exact: true }).waitFor()
