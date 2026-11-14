@@ -38,6 +38,7 @@ npm run setup
 ./cweb start --no-browser      # 后台启动，手动打开网页
 ./cweb start --port 4781       # 选择其他端口
 ./cweb logs                    # 查看日志
+./cweb doctor                  # 只读检查本地环境、构建与服务
 ./cweb stop                    # 正常停止，运行中的任务会阻止停止
 ./cweb restart                 # 正常重启并打开网页
 ```
@@ -49,7 +50,20 @@ node scripts/install-launcher.mjs
 node scripts/install-launcher.mjs --install
 ```
 
-第二条命令会在项目外创建 `~/.local/bin/cweb`，已有同名文件时拒绝覆盖；该目录须在 `PATH` 中。入口记录当前 Node 和仓库的绝对路径，移动仓库或删除该 Node 版本后需要重新安装：先正常停止服务，确认并移除旧的 cweb 入口，再运行安装命令。
+第二条命令会在项目外创建 `~/.local/bin/cweb` 并安装用户级 Bash 补全，已有同名启动入口时拒绝覆盖；该目录须在 `PATH` 中。入口记录当前 Node 和仓库的绝对路径，移动仓库或删除该 Node 版本后需要重新安装：先正常停止服务，确认并移除旧的 cweb 入口，再运行安装命令。
+
+### Bash 的 Tab 补全
+
+已经安装过启动入口时，只需安装补全：
+
+```bash
+cweb completion install
+source <(cweb completion bash)  # 让当前 Bash 立即生效
+```
+
+Ubuntu 的 `bash-completion` 会在新终端自动发现规则。输入 `cweb ` 后按两次 Tab 显示自身子命令，输入 `cweb re` 后按 Tab 补成 `restart`；`cweb restart --` 后按 Tab 提示该命令的参数。未知内容或端口数值不会转去补全电脑上的指令、文件。规则同时适用于仓库内的 `./cweb`，Tab 本身只运行 Bash 内建操作。
+
+补全默认保存在 `~/.local/share/bash-completion/completions/cweb`，遵循 `XDG_DATA_HOME` 和 `BASH_COMPLETION_USER_DIR`。重复安装可更新 cweb 生成的规则，已有自定义文件或符号链接会保留。没有安装 `bash-completion` 的 Bash 也可通过上面的 `source` 命令临时启用；Zsh 和 Fish 目前未提供专用规则。
 
 有多个 CLI 或浏览器版本时，可在**启动服务的终端**指定实际可执行文件：
 
@@ -91,4 +105,4 @@ CWEB_BROWSER=/绝对路径/浏览器 ./cweb start
 - **端口已被占用**：使用 `./cweb start --port 4781`，或在服务已运行时先正常停止，再用新端口启动；不要结束未知进程。
 - **正常停止被拒绝**：先等待或在网页停止正在执行的任务，再运行 `./cweb stop`。`--force` 会中断任务，应由用户主动决定。
 - **会话列表与终端不一致**：确认网页服务和终端使用同一个系统用户、`CODEX_HOME` 与 CLI；检查工作区路径。网页重获焦点及定期刷新会重新读取列表。另请注意，复制 Git 仓库不会迁移旧机器的会话数据。
-- **查看诊断信息**：先运行 `./cweb status`、`./cweb logs`；分享日志前自行检查并清理可能包含的路径或敏感信息。
+- **查看诊断信息**：先运行 `./cweb doctor` 检查本地 Node、前端构建、CLI 与服务状态；需要模型网络检查时使用网页的「连接与诊断」。也可运行 `./cweb status`、`./cweb logs`；分享日志前自行检查并清理可能包含的路径或敏感信息。

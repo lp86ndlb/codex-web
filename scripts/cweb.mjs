@@ -4,6 +4,8 @@ import { access, mkdir, open, readFile, rm, stat, writeFile } from 'node:fs/prom
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { cliCommands, completionActions } from './cli-commands.mjs'
+import { bashCompletion, installBashCompletion } from './completion.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const data = resolve(process.env.CWEB_DATA_DIR || resolve(root, 'bridge/.data'))
@@ -88,10 +90,18 @@ async function main() {
     port: { type: 'string' }, 'no-browser': { type: 'boolean' }, force: { type: 'boolean', default: false }, help: { type: 'boolean', short: 'h' },
   } })
   const action = values.help ? 'help' : positionals[0] || 'start'
-  if (positionals.length > 1) throw new Error('只接受一个操作；运行 cweb help 查看用法。')
-  if (!['start', 'open', 'stop', 'restart', 'status', 'port', 'logs', 'help'].includes(action)) throw new Error(`未知操作 ${action}，运行 cweb help 查看用法。`)
+  if (positionals.length > (positionals[0] === 'completion' ? 2 : 1)) throw new Error('只接受一个操作；运行 cweb help 查看用法。')
+  if (!Object.hasOwn(cliCommands, action)) throw new Error(`未知操作 ${action}，运行 cweb help 查看用法。`)
   if (values.port !== undefined && (!/^\d+$/.test(values.port) || Number(values.port) > 65535)) throw new Error('端口必须为 0–65535；0 表示自动分配。')
-  if (action === 'help') { console.log('cweb [start|open|stop|restart|status|port|logs]\n  默认：后台启动并在 Edge 打开网页；重复运行复用服务。\n  --port 4780   指定端口（0 自动分配）\n  --no-browser 不打开浏览器\n  --force      停止服务时中断仍在运行的任务\n  CWEB_BROWSER 可指定浏览器可执行文件。\n  工作区在网页中添加，与启动目录无关。'); return }
+  if (action === 'help') { console.log(`cweb [${Object.keys(cliCommands).join('|')}]\n  默认：后台启动并在 Edge 打开网页；重复运行复用服务。\n  --port 4780   指定端口（0 自动分配）\n  --no-browser 不打开浏览器\n  --force      停止服务时中断仍在运行的任务\n  doctor       只读检查本地环境、构建与服务状态\n  completion bash     输出 Bash 补全脚本\n  completion install  安装用户级 Bash 补全\n  CWEB_BROWSER 可指定浏览器可执行文件。\n  工作区在网页中添加，与启动目录无关。`); return }
+  if (action === 'completion') {
+    const format = positionals[1] || 'bash'
+    if (!completionActions.includes(format)) throw new Error('用法：cweb completion bash 或 cweb completion install')
+    if (format === 'bash') process.stdout.write(bashCompletion())
+    else console.log(`已安装 Bash 补全：${await installBashCompletion()}\n新终端自动生效；当前终端运行：source <(cweb completion bash)`)
+    return
+  }
+  if (action === 'doctor') { const { runDoctor } = await import('./doctor.mjs'); const result = await runDoctor({ root, data }); if (!result.ok) process.exitCode = 1; return }
   if (['status', 'port'].includes(action)) {
     const state = await readState(); const status = await health(state)
     console.log(status ? action === 'port' ? state.port : `cweb 运行中 · PID ${state.pid} · http://127.0.0.1:${state.port}${status.busy ? ' · 有任务执行中' : ''}` : 'cweb 未运行。'); return

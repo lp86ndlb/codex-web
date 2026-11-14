@@ -10,6 +10,7 @@
 ./cweb                      # 后台启动，优先打开 Edge
 ./cweb status               # 查看状态与地址
 ./cweb logs                 # 查看日志
+./cweb doctor               # 只读检查环境与服务
 ./cweb start --no-browser    # 手动打开浏览器
 ./cweb start --port 4781     # 指定端口
 ./cweb stop                 # 正常停止；有任务运行时会拒绝
@@ -22,7 +23,7 @@
 
 可在启动终端指定 `CWEB_CODEX=/path/to/codex`、`CWEB_BROWSER=/path/to/browser` 或 `CWEB_DATA_DIR=/path/to/data`。已有服务会保留启动时的环境，更改后需在任务结束时正常重启。
 
-从任意终端使用 `cweb` 的可选安装方式见 [部署指南](ubuntu-deployment.md#常用命令)。安装入口会写入用户目录，不是运行网页的必要步骤。
+从任意终端使用 `cweb` 的可选安装方式见 [部署指南](ubuntu-deployment.md#常用命令)。安装入口会同时提供 Bash Tab 补全；已有入口可运行 `cweb completion install`，当前 Bash 用 `source <(cweb completion bash)` 立即启用。补全只提示 cweb 子命令及相应参数。安装入口会写入用户目录，不是运行网页的必要步骤。
 
 ## 工作区与原生会话
 
