@@ -79,3 +79,16 @@ test('an account change during a read retires the earlier result', async () => {
   rpc.call = async (method, params) => { const value = await call(method, params); if (method === 'account/rateLimits/read') rpc.emit('notification', { method: 'account/updated' }); return value }
   assert.equal((await usage.read()).limits.length, 0)
 })
+
+test('the initial login notification during CLI startup does not retire the following verified read', async () => {
+  const rpc = new Rpc(), usage = rpc.service()
+  rpc.start = async () => { rpc.emit('notification', { method: 'account/updated' }) }
+  assert.equal((await usage.read()).limits[0].primary?.usedPercent, 29)
+})
+
+test('a late initial account notification re-reads the identity and limits once', async () => {
+  const rpc = new Rpc(), usage = rpc.service(), call = rpc.call.bind(rpc); let notified = false
+  rpc.call = async (method, params) => { const value = await call(method, params); if (method === 'account/rateLimits/read' && !notified) { notified = true; rpc.emit('notification', { method: 'account/updated' }) } return value }
+  assert.equal((await usage.read()).limits[0].primary?.usedPercent, 29)
+  assert.equal(rpc.reads().length, 2)
+})

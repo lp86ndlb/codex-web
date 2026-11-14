@@ -25,6 +25,7 @@ function failure(error: unknown) {
   if (/429|rate.?limit.*exceed|too many requests/i.test(text)) return { retry: false, text: '额度查询请求过于频繁，请稍后刷新。' }
   return { retry: true, text: /time.?out|超时/i.test(text) ? '额度查询超时，请检查连接后刷新。' : '暂时无法取得额度快照，请检查连接或稍后刷新。' }
 }
+class AccountChanged extends Error {}
 
 /** Keep only confirmed, account-scoped snapshots in memory; never infer usage
  * from a previous conversation, and never expose identity fields to the UI. */
@@ -42,18 +43,25 @@ export class AccountUsage {
   private clear() { this.epoch++; this.cached = undefined; this.pending = undefined }
   read(): Promise<AccountStatus> {
     if (this.pending) return this.pending
-    const pending = this.load().finally(() => { if (this.pending === pending) this.pending = undefined })
+    const pending = (async () => {
+      // Initialize/login notifications can arrive after the socket is ready.
+      // Re-read both account and limits once under the new identity epoch.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { return await this.load() } catch (error) { if (!(error instanceof AccountChanged)) throw error }
+      }
+      return { accountType: '', planType: '', limits: [], error: '账户或连接状态已变化，请刷新额度。' }
+    })().finally(() => { if (this.pending === pending) this.pending = undefined })
     this.pending = pending; return pending
   }
   private async load(): Promise<AccountStatus> {
-    const epoch = this.epoch
     await this.rpc.start()
+    const epoch = this.epoch
     const [accountResult, initial] = await Promise.allSettled([
       this.rpc.call('account/read', { refreshToken: false }),
       // Normal usage polls do not need the separate reset-credit detail API.
       this.rpc.call('account/rateLimits/read', { excludeResetCreditDetails: true }),
     ])
-    if (epoch !== this.epoch) return { accountType: '', planType: '', limits: [], error: '账户或连接状态已变化，请刷新额度。' }
+    if (epoch !== this.epoch) throw new AccountChanged()
     const response = accountResult.status === 'fulfilled' ? record(accountResult.value) : {}, account = record(response.account)
     const accountType = string(account.type), planType = string(account.planType)
     const routing = string(record(response.workspaceRouting).chatgptAccountId)
@@ -67,7 +75,7 @@ export class AccountUsage {
       try { result = { status: 'fulfilled', value: await this.rpc.call('account/rateLimits/read', { excludeResetCreditDetails: true }) } }
       catch (reason) { result = { status: 'rejected', reason } }
     }
-    if (epoch !== this.epoch) return { accountType: '', planType: '', limits: [], error: '账户或连接状态已变化，请刷新额度。' }
+    if (epoch !== this.epoch) throw new AccountChanged()
     const raw = result.status === 'fulfilled' ? record(result.value) : {}, rows = limits(raw)
     if (routing && string(raw.accountId) && raw.accountId !== routing) { this.cached = undefined; return { accountType, planType, limits: [], error: '额度快照与当前账户不一致，请稍后刷新。' } }
     if (rows.length && accountResult.status === 'fulfilled' && accountType) {
