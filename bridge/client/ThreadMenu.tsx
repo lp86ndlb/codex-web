@@ -38,11 +38,15 @@ export function ThreadMenu({ target, title, busy, connected, unavailable, native
     if (!target) return
     const outside = (event: PointerEvent) => { if (!popup.current?.contains(event.target as Node) && !target.trigger.contains(event.target as Node)) close.current(false) }
     const focus = (event: FocusEvent) => { if (!popup.current?.contains(event.target as Node) && !target.trigger.contains(event.target as Node)) close.current(false) }
-    const scroll = (event: Event) => { if (!popup.current?.contains(event.target as Node)) close.current(true) }
+    // Focus and incoming sidebar rows can emit a queued scroll just after the
+    // menu opens. Dismiss on the user's scroll gesture; scrollbar dragging is
+    // already covered by outside pointerdown.
+    const scrollIntent = (event: Event) => { if (!popup.current?.contains(event.target as Node)) close.current(false) }
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape' && !event.isComposing) { event.preventDefault(); event.stopPropagation(); close.current(true) } }
-    document.addEventListener('pointerdown', outside, true); document.addEventListener('focusin', focus); document.addEventListener('scroll', scroll, true)
+    document.addEventListener('pointerdown', outside, true); document.addEventListener('focusin', focus)
+    document.addEventListener('wheel', scrollIntent, { capture: true, passive: true }); document.addEventListener('touchmove', scrollIntent, { capture: true, passive: true })
     document.addEventListener('keydown', escape, true)
-    return () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('focusin', focus); document.removeEventListener('scroll', scroll, true); document.removeEventListener('keydown', escape, true) }
+    return () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('focusin', focus); document.removeEventListener('wheel', scrollIntent, true); document.removeEventListener('touchmove', scrollIntent, true); document.removeEventListener('keydown', escape, true) }
   }, [target])
   const disabled = busy || !connected
   const reason = !connected ? '连接就绪后可执行此操作' : busy ? '正在提交操作，请稍候' : unavailable

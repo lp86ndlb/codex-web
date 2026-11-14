@@ -77,7 +77,9 @@ try {
   await row(b.id).dispatchEvent('contextmenu', { clientX: 1438, clientY: 998 }); await menu().waitFor(); await bounds()
   await page.mouse.click(700, 140); await menu().waitFor({ state: 'hidden' })
   await right(b.id)
-  await page.locator('.thread-list').dispatchEvent('scroll'); await menu().waitFor({ state: 'hidden' })
+  await page.locator('.thread-list').dispatchEvent('scroll'); await page.locator('.conversation').dispatchEvent('scroll')
+  assert.equal(await menu().isVisible(), true, 'Queued focus/streaming scrolls must not dismiss a newly opened menu')
+  await page.locator('.thread-list').dispatchEvent('wheel', { deltaY: 80 }); await menu().waitFor({ state: 'hidden' })
   await page.locator('.brand').dispatchEvent('contextmenu'); assert.equal(await page.evaluate(() => window.lastContextEvent?.defaultPrevented), false)
 
   stage = 'terminal command belongs to the context target'
