@@ -1,4 +1,7 @@
 export const commands = [
+  { id: '/fork', label: '分支话题', detail: '继承指定位置之前的历史，保留原话题' },
+  { id: '/review', label: '原生代码审查', detail: '审查未提交改动、基础分支或指定提交' },
+  { id: '/doctor', label: '连接与诊断', detail: '分层状态、只读网络检查与脱敏报告' },
   { id: '/new', label: '新建会话', detail: '在当前工作区开始新会话', key: 'Ctrl Alt N' },
   { id: '/resume', label: '查找会话', detail: '打开工作区和最近会话' },
   { id: '/model', label: '模型与推理强度', detail: '默认模型与当前会话设置' },

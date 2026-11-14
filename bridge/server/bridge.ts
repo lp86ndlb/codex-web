@@ -18,6 +18,9 @@ import { applyNotification, projectThread } from './projection.ts'
 import { array, BridgeError, record, string } from './errors.ts'
 import { recoveryPolicy, hasRecoveryOutput } from './auto-recovery.ts'
 import { SessionContextStore } from './session-context.ts'
+import { ConnectionDiagnostics } from './diagnostics.ts'
+import { SubmissionJournal } from './submissions.ts'
+import { parseElicitation, validateElicitation } from '../shared/elicitation.ts'
 
 interface PendingRequest { wireId: string | number; approval: Approval; params: Record<string, unknown> }
 interface RecoverySource { input?: MessageInput; sourceTurnId: string; retryTurnId?: string; attempt: number; failure: string; blocked?: boolean; starting?: boolean; timer?: ReturnType<typeof setTimeout> }
@@ -33,6 +36,8 @@ export class Bridge extends EventEmitter {
   attachments: AttachmentStore
   genui: GenuiStore
   metrics: RunHistory
+  diagnostics: ConnectionDiagnostics
+  submissions: SubmissionJournal
   codexHome: string
   readonly dataDirectory: string
   readonly sharedHistory: boolean
@@ -84,6 +89,8 @@ export class Bridge extends EventEmitter {
     this.attachments = new AttachmentStore(resolve(dataDirectory, 'attachments'))
     this.genui = new GenuiStore(resolve(dataDirectory, 'plugins/genui'))
     this.metrics = new RunHistory(resolve(dataDirectory, 'run-history'))
+    this.diagnostics = new ConnectionDiagnostics(rpc)
+    this.submissions = new SubmissionJournal(resolve(dataDirectory, 'submission-receipts.json'))
     this.sessionContexts = new SessionContextStore(resolve(dataDirectory, 'session-context.json'))
     rpc.on('notification', message => this.notification(record(message)))
     rpc.on('request', message => this.request(record(message)))
@@ -668,7 +675,7 @@ export class Bridge extends EventEmitter {
         efforts: array(model.supportedReasoningEfforts).map(value => string(record(value).reasoningEffort)) }
     }) : []
     const account = accountResult.status === 'fulfilled' ? record(record(accountResult.value).account) : {}
-    return { capabilities: { fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true, contextUsageMenu: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
+    return { capabilities: { diagnostics: true, durableMessages: true, mcpElicitation: true, nativeActions: true, fileReferences: true, filePreview: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true, contextUsageMenu: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
       account: string(account.type) || '未检测到登录；自定义供应商可使用环境变量', threads: this.list() }
   }
 
@@ -707,6 +714,42 @@ export class Bridge extends EventEmitter {
     this.creating++
     try { return await this.createThread(cwd, model) }
     finally { this.creating-- }
+  }
+
+  async fork(id: string, beforeTurnId?: string): Promise<ThreadView> {
+    const source = await this.open(id)
+    if (source.turnId && !beforeTurnId) throw new BridgeError('BUSY', '当前话题正在执行，请选择历史位置分支，或等本轮结束。', 409)
+    if (beforeTurnId && !source.items.some(item => item.turnId === beforeTurnId)) throw new BridgeError('FORK_BOUNDARY', '分支位置已变化，请重新选择。', 409)
+    await this.catalog.forPath(source.cwd).directory(source.cwd)
+    this.creating++
+    try {
+      const options = await this.preferences.options(id)
+      const response = record(await this.rpc.call('thread/fork', { threadId: id, ...(beforeTurnId ? { beforeTurnId } : {}), deferGoalContinuation: true, excludeTurns: true, cwd: source.cwd, sandbox: options.mode, approvalPolicy: options.approvalPolicy, approvalsReviewer: 'user' }))
+      const thread = await this.projectHistory(response.thread)
+      if (!thread.id || thread.id === id) throw new BridgeError('CLI_PROTOCOL', 'CLI 未返回新的分支会话。请检查原生会话列表。', 502)
+      thread.forkedFromId = id; thread.model = string(response.model) || source.model
+      await this.preferences.setOptions(thread.id, options)
+      this.changed(thread)
+      try { await this.rename(thread.id, (source.title + ' · 分支').slice(0, 120)) } catch { /* The fork is valid even if an optional rename fails. */ }
+      this.publish({ type: 'preferences', ...await this.preferences.snapshot() })
+      return this.threads.get(thread.id)!
+    } finally { this.creating-- }
+  }
+
+  async review(id: string, target: { type: 'uncommittedChanges' } | { type: 'baseBranch'; branch: string } | { type: 'commit'; sha: string } | { type: 'custom'; instructions: string }) {
+    if (this.submitting.has(id) || this.compactions.has(id)) throw new BridgeError('BUSY', '请等当前操作完成后再审查。', 409)
+    this.submitting.add(id); this.cancelRecovery(id)
+    let claimed = false
+    try {
+      const thread = await this.open(id, true)
+      if (thread.turnId) throw new BridgeError('BUSY', '请等本轮结束后再启动原生审查。', 409)
+      this.ownedTurns.add(id); claimed = true
+      const response = record(await this.rpc.call('review/start', { threadId: id, target, delivery: 'inline' }))
+      const turn = record(response.turn), latest = this.threads.get(id)
+      if (latest && string(turn.id) && this.ownedTurns.has(id) && !latest.runs?.some(run => run.id === turn.id && run.status !== 'inProgress')) this.changed({ ...latest, turnId: string(turn.id), status: 'inProgress', error: null })
+      return this.threads.get(id)
+    } catch (error) { if (claimed) this.ownedTurns.delete(id); throw error }
+    finally { this.submitting.delete(id) }
   }
 
   private async createThread(cwd: string, model?: string): Promise<ThreadView> {
@@ -832,7 +875,42 @@ export class Bridge extends EventEmitter {
 
   async message(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }): Promise<void> {
     this.cancelRecovery(id)
-    return this.submitMessage(id, input, edit)
+    const key = input.clientMessageId
+    if (!key) return this.submitMessage(id, input, edit)
+    const claimed = await this.submissions.claim(id, key, { input, edit })
+    if (!claimed.fresh) {
+      if (claimed.receipt.state === 'accepted') return
+      throw new BridgeError(claimed.receipt.state === 'rejected' ? 'MESSAGE_REJECTED' : 'MESSAGE_RESULT_UNKNOWN', claimed.receipt.state === 'rejected' ? '这条提交已被拒绝，请恢复草稿后重新发送。' : '这条消息的提交结果正在核对，未重复执行。', 409)
+    }
+    try { await this.submitMessage(id, input, edit); await this.submissions.settle(key, 'accepted') }
+    catch (error) {
+      const code = error instanceof BridgeError ? error.code : 'INTERNAL'
+      // NOT_RUNNING is checked before steer is sent; the client can safely
+      // submit this same input as a new turn instead.
+      if (code === 'NOT_RUNNING') await this.submissions.forget(key)
+      else await this.submissions.settle(key, ['BUSY', 'SESSION_IN_USE', 'SKILL_MISSING', 'PLAN_UNAVAILABLE', 'MODEL_MISSING', 'EDIT_UNAVAILABLE', 'EDIT_STALE', 'ATTACHMENT_MISSING', 'WORKSPACE_MISSING', 'PATH_OUTSIDE'].includes(code) ? 'rejected' : 'unknown', code)
+      throw error
+    }
+  }
+
+  async delivery(id: string, messageId: string) {
+    const receipt = await this.submissions.get(id, messageId)
+    if (receipt?.state === 'accepted' || receipt?.state === 'rejected') return { state: receipt.state, code: receipt.code }
+    if (this.queued.some(row => row.threadId === id && row.input.clientMessageId === messageId)) return { state: 'accepted' as const, queued: true }
+    const matched = (items: unknown[]) => items.some(item => record(item).type === 'userMessage' && record(item).id === messageId)
+    let found = matched(this.threads.get(id)?.items || [])
+    if (!found) {
+      await this.rpc.start()
+      const raw = record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false })).thread)
+      await this.catalog.forPath(string(raw.cwd)).directory(string(raw.cwd))
+      const turns = raw.historyMode === 'paginated'
+        ? array(record(await this.rpc.call('thread/turns/list', { threadId: id, limit: 20, sortDirection: 'desc', itemsView: 'full' })).data)
+        : array(record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: true })).thread).turns)
+      found = turns.some(turn => matched(array(record(turn).items)))
+    }
+    if (found) { if (receipt) await this.submissions.settle(messageId, 'accepted'); return { state: 'accepted' as const } }
+    // Missing from a bounded history read is not proof that a request failed.
+    return { state: 'unknown' as const, code: receipt?.code }
   }
 
   private async submitMessage(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }, recovery?: RecoverySource, eligibleForRecovery = true): Promise<void> {
@@ -985,11 +1063,15 @@ export class Bridge extends EventEmitter {
     this.publish({ type: 'threads', threads: this.list() })
   }
 
-  answer(id: string, decision: 'accept' | 'decline' | 'cancel', answers: Record<string, string[]> = {}): void {
+  answer(id: string, decision: 'accept' | 'decline' | 'cancel', answers: Record<string, string[]> = {}, content: Record<string, unknown> = {}): void {
     const pending = this.pending.get(id)
     if (!pending) throw new BridgeError('REQUEST_EXPIRED', '此请求已处理或已失效', 409)
     const method = pending.approval.method
-    if (method === 'item/tool/requestUserInput' || method === 'tool/requestUserInput') {
+    if (method === 'mcpServer/elicitation/request') {
+      let validated: unknown = null
+      if (decision === 'accept') { try { validated = validateElicitation(parseElicitation(pending.params), content) } catch (error) { throw new BridgeError('ELICITATION_INVALID', error instanceof Error ? error.message : '请检查表单内容') } }
+      this.rpc.respond(pending.wireId, { action: decision, content: validated })
+    } else if (method === 'item/tool/requestUserInput' || method === 'tool/requestUserInput') {
       const response: Record<string, { answers: string[] }> = {}
       for (const question of pending.approval.questions) {
         if (decision === 'accept' && !answers[question.id]?.some(answer => answer.trim())) {
@@ -1119,8 +1201,10 @@ export class Bridge extends EventEmitter {
         })
       return
     }
-    const supported = ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'item/tool/requestUserInput', 'tool/requestUserInput']
-    if (!supported.includes(method) || !this.threads.has(threadId)) {
+    const supported = ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'item/tool/requestUserInput', 'tool/requestUserInput', 'mcpServer/elicitation/request']
+    // A resumed MCP server may ask for input before thread/resume returns its
+    // initial history. Keep the request pending while that known thread opens.
+    if (!supported.includes(method) || !this.threads.has(threadId) && !this.opening.has(threadId)) {
       if (method === 'mcpServer/elicitation/request') this.rpc.respond(wireId, { action: 'decline', content: null })
       else this.rpc.rejectRequest(wireId, `This local client does not support ${method}`)
       const thread = this.threads.get(threadId)
@@ -1129,6 +1213,7 @@ export class Bridge extends EventEmitter {
     }
     const id = JSON.stringify(wireId)
     const approval: Approval = {
+      ...(method === 'mcpServer/elicitation/request' ? { elicitation: parseElicitation(params) } : {}),
       id, method, threadId, turnId: string(params.turnId), reason: string(params.reason),
       command: string(params.command), cwd: string(params.cwd),
       detail: method === 'item/permissions/requestApproval' ? JSON.stringify(params.permissions, null, 2)
@@ -1144,6 +1229,7 @@ export class Bridge extends EventEmitter {
   }
 
   async dispose() {
+    this.diagnostics.dispose()
     for (const id of this.compactions.keys()) this.finishCompact(id, false)
     for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)
     this.disposed = true; this.reconciliationEpoch++

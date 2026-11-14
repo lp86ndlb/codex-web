@@ -124,7 +124,13 @@ try {
       await page.mouse.move(box.x + 100, box.y + 100)
       await page.mouse.wheel(0, -120)
     }
-    await until(async () => await firstId() !== beforeId, 'Continuing to roll upward did not reveal the preceding page')
+    await until(async () => {
+      if (await firstId() !== beforeId) return true
+      // A single gesture inside the 450 ms page-load throttle is deliberately
+      // ignored. Model continued scrolling until the next page can be loaded.
+      if (pages > 0) await page.mouse.wheel(0, -120)
+      return false
+    }, 'Continuing to roll upward did not reveal the preceding page')
     await checkAnchor(beforeAnchor)
     await bounded()
     assert.equal(await transcript.locator('.tool-output, .local-image').count(), 0)

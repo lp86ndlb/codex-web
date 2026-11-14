@@ -3,7 +3,7 @@ import type { AttachmentInfo, Item, SkillInfo, ThreadView } from '../shared/type
 export interface DraftContents { text: string; files: AttachmentInfo[]; skills: SkillInfo[]; references: string[] }
 export interface PendingMessage {
   id: string; key: string; item: Item; baseline: string[]; contents: DraftContents
-  state: 'sending' | 'syncing' | 'failed'; error?: string; editTurnId?: string
+  state: 'sending' | 'syncing' | 'failed' | 'unknown'; error?: string; editTurnId?: string
 }
 
 /** Prefer the native client id. The content fallback also supports a bridge

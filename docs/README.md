@@ -11,5 +11,6 @@
 | 维护仓库展示和主题 | [维护说明](maintaining.md) |
 | 查看 Agent 界面调研与 120 项升级清单 | [能力扩展调研](research/2026-11-14-agent-ui-survey.md) |
 | 对照 Codex 原生协议与当前接入范围 | [Codex 0.169.0 能力对照](research/codex-0.169-capability-map.md) |
+| 查看首批可靠性与原生能力升级 | [实现与验收记录](releases/2026-11-14-reliability.md) |
 
 回到[项目首页](../README.md)。

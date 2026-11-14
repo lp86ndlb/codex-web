@@ -5,6 +5,7 @@ import net from 'node:net'
 import WebSocket from 'ws'
 import { BridgeError, errorMessage, record, string } from './errors.ts'
 import type { RuntimeStatus } from '../shared/types.ts'
+import { diagnosticRunner } from './diagnostics.ts'
 
 export interface RpcOptions {
   socketPath?: string
@@ -36,9 +37,10 @@ export class CodexRpc extends EventEmitter {
   get pid() { return this.child?.pid }
   get sharedEngine() { return Boolean(this.options.socketPath) }
   get enginePid() { return this.options.enginePid }
+  diagnosticRunner() { return diagnosticRunner(this.options.command, this.options.cwd, this.options.env) }
 
   private setStatus(state: RuntimeStatus['state'], error: string | null = null) {
-    this.status = { state, error }
+    this.status = { ...this.status, state, error, ...(state === 'ready' ? { connectedAt: Date.now() } : {}) }
     this.emit('status', this.status)
   }
 
@@ -116,10 +118,11 @@ export class CodexRpc extends EventEmitter {
       }
     })
     try {
-      await this.call('initialize', {
+      const initialized = record(await this.call('initialize', {
         clientInfo: { name: 'cweb_local', title: 'cweb', version: '0.3.0' },
         capabilities: { experimentalApi: true },
-      })
+      }))
+      this.status.userAgent = string(initialized.userAgent) || undefined
       this.write({ method: 'initialized', params: {} })
       this.setStatus('ready')
     } catch (error) {
@@ -147,7 +150,8 @@ export class CodexRpc extends EventEmitter {
     socket.on('error', () => fail(new BridgeError('CLI_CONNECT', '无法连接本地 Codex 服务，请检查连接状态', 503)))
     try {
       await new Promise<void>((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject) })
-      await this.call('initialize', { clientInfo: { name: 'cweb_local', title: 'cweb', version: '0.3.0' }, capabilities: { experimentalApi: true } })
+      const initialized = record(await this.call('initialize', { clientInfo: { name: 'cweb_local', title: 'cweb', version: '0.3.0' }, capabilities: { experimentalApi: true } }))
+      this.status.userAgent = string(initialized.userAgent) || undefined
       this.write({ method: 'initialized', params: {} }); this.setStatus('ready')
     } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); throw error }
   }

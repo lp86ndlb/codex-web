@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Archive, ArrowLeft, Check, ChevronRight, Cpu, Gauge, Keyboard, LoaderCircle, Monitor, Moon, Palette, Plug, Puzzle, RefreshCw, Search, Settings2, ShieldCheck, Sun } from 'lucide-react'
 import type { Bootstrap, ModelOption, Preferences, SessionOptions, SkillInfo, ThreadSummary, ThreadView, WorkspaceInfo } from '../shared/types.ts'
 import { api, message } from './api.ts'
@@ -12,6 +12,8 @@ import { StatusPanel } from './StatusPanel.tsx'
 import { LoadingStylePicker } from './LoadingStylePicker.tsx'
 import type { RunningStyle } from './RunningBorder.tsx'
 import { FilePreviewProvider } from './FilePreview.tsx'
+import { ConnectionPanel } from './ConnectionPanel.tsx'
+import type { RuntimeStatus } from '../shared/types.ts'
 import { workspaceFor } from './Workspaces.tsx'
 
 export type SettingsTab = 'general' | 'models' | 'skills' | 'appearance' | 'archives' | 'shortcuts' | 'connection' | 'status'
@@ -19,7 +21,7 @@ const tabs: { id: SettingsTab; title: string; icon: ReactNode }[] = [
   { id: 'general', title: '常规', icon: <Settings2 size={17} /> }, { id: 'models', title: '模型与权限', icon: <Cpu size={17} /> },
   { id: 'skills', title: 'Skills', icon: <Puzzle size={17} /> }, { id: 'appearance', title: '外观与布局', icon: <Palette size={17} /> },
   { id: 'archives', title: '归档会话', icon: <Archive size={17} /> }, { id: 'shortcuts', title: '快捷键', icon: <Keyboard size={17} /> },
-  { id: 'status', title: '状态与额度', icon: <Gauge size={17} /> }, { id: 'connection', title: '连接', icon: <Plug size={17} /> },
+  { id: 'status', title: '状态与额度', icon: <Gauge size={17} /> }, { id: 'connection', title: '连接与诊断', icon: <Plug size={17} /> },
 ]
 export function Switch({ label, detail, checked, onChange, disabled = false }: { label: string; detail?: string; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
   return <label className="setting-switch"><span><strong>{label}</strong>{detail && <small>{detail}</small>}</span><span className="switch-control"><input type="checkbox" aria-label={label} checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} /><span className="switch-track"><span /></span></span></label>
@@ -35,6 +37,7 @@ function OptionFields({ value, models, onChange, prefix }: { value: SessionOptio
 
 export function SettingsPanel(props: {
   loadingStyle: RunningStyle; onLoadingStyle: (value: RunningStyle) => void; loadingFocus?: boolean
+  runtime: RuntimeStatus; online: boolean; thread?: ThreadView
   tab: SettingsTab; onTab: (tab: SettingsTab) => void; boot: Bootstrap | null; connected: boolean
   preferences: Preferences; onPreferences: (patch: Partial<Preferences>) => Promise<void>
   current?: { title: string; options: SessionOptions; model?: string; tokens?: number }; onCurrent: (patch: Partial<SessionOptions>) => void
@@ -63,8 +66,19 @@ export function SettingsPanel(props: {
     try { await operation() } catch (error) { setError(message(error)) } finally { setSaving(value => value - 1) }
   }
   const change = (patch: Partial<Preferences>) => { void action(() => props.onPreferences(patch)) }
-  return <div className="settings-layout"><nav className="settings-nav" aria-label="设置分类">{tabs.map(item => <button type="button" key={item.id} className={tab === item.id ? 'active' : ''} aria-current={tab === item.id ? 'page' : undefined} onClick={() => props.onTab(item.id)}>{item.icon}<span>{item.title}</span></button>)}</nav>
-    <div className="settings-page"><div className="settings-page-heading"><h3>{tabs.find(item => item.id === tab)?.title}</h3><span role="status">{saving ? <><LoaderCircle size={13} className="spin" />保存中</> : <><Check size={13} />自动保存</>}</span></div>{error && <Notice text={error} />}
+  const navigation = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const nav = navigation.current, active = nav?.querySelector<HTMLElement>('[aria-current="page"]')
+    if (!nav || !active) return
+    const align = () => { if (nav.scrollWidth > nav.clientWidth) {
+      const offset = active.getBoundingClientRect().left - nav.getBoundingClientRect().left
+      nav.scrollLeft += offset - (nav.clientWidth - active.clientWidth) / 2
+    } }
+    align(); const observer = new ResizeObserver(align); observer.observe(nav)
+    return () => observer.disconnect()
+  }, [tab])
+  return <div className="settings-layout"><nav ref={navigation} className="settings-nav" aria-label="设置分类">{tabs.map(item => <button type="button" key={item.id} className={tab === item.id ? 'active' : ''} aria-current={tab === item.id ? 'page' : undefined} onClick={() => props.onTab(item.id)}>{item.icon}<span>{item.title}</span></button>)}</nav>
+    <div className="settings-page"><div className="settings-page-heading"><h3>{tabs.find(item => item.id === tab)?.title}</h3><span role="status">{tab === 'connection' ? '按需检查' : saving ? <><LoaderCircle size={13} className="spin" />保存中</> : <><Check size={13} />自动保存</>}</span></div>{error && <Notice text={error} />}
       {tab === 'general' && <><p className="settings-description">把工作方式设为默认，接下来专注于项目本身。</p>
         <label className="setting-field">发送消息<select aria-label="发送消息快捷键" value={prefs.sendKey} onChange={event => change({ sendKey: event.target.value as Preferences['sendKey'] })}><option value="enter">Enter 发送 · Shift Enter 换行</option><option value="mod-enter">Ctrl / ⌘ Enter 发送 · Enter 换行</option></select></label>
         <Switch label="启用 GenUI" detail="按需加载交互图表、表单、函数图和会话面板" checked={prefs.genui} onChange={genui => change({ genui })} />
@@ -97,7 +111,7 @@ export function SettingsPanel(props: {
       {tab === 'archives' && <>{preview ? <><button className="settings-text-button" onClick={() => setPreview(null)}><ArrowLeft size={15} />返回归档列表</button><h4>{preview.title}</h4><FilePreviewProvider workspaceId={previewWorkspace?.id} root={previewWorkspace?.path} cwd={preview.cwd}><GenuiProvider inlinePanels threadId={preview.id} enabled={prefs.genui} streaming={false} onAction={async () => { throw new Error('请先恢复这个归档会话，再提交交互') }} onOpen={() => {}}><div className="archive-preview">{preview.items.map(item => <TranscriptItem key={item.id} item={item} autoRecovery={Boolean(item.turnId && preview.runs?.some(run => run.id === item.turnId && run.recoveryOf))} />)}</div></GenuiProvider></FilePreviewProvider></> : <><p className="settings-description">归档会话仍保留内容，可以随时查看或恢复。</p><label className="settings-search"><Search size={16} /><input aria-label="搜索归档会话" placeholder="搜索标题或工作区" value={search} onChange={event => setSearch(event.target.value)} /></label>{loading ? <div className="settings-loading"><LoaderCircle className="spin" />读取归档…</div> : <div className="archive-list">{archives.filter(row => `${row.title} ${row.cwd}`.toLowerCase().includes(search.toLowerCase())).map(row => <article key={row.id}><div><strong>{row.title}</strong><small title={row.cwd}>{props.workspaces.find(w => row.cwd === w.path)?.name || row.cwd}</small></div><button disabled={saving > 0} onClick={() => void action(async () => setPreview(await api<ThreadView>(`/archives/${encodeURIComponent(row.id)}`)))}>查看</button><button disabled={saving > 0} onClick={() => void action(async () => { await api(`/threads/${encodeURIComponent(row.id)}/restore`, {}); setArchives(rows => rows.filter(value => value.id !== row.id)); props.onRestored(row.id) })}>恢复并打开</button></article>)}{!archives.length && <p className="settings-empty">还没有归档的会话</p>}</div>}</>}</>}
       {tab === 'shortcuts' && <><p className="settings-description">输入 / 打开命令菜单，输入 $ 选择 Skill。浏览器保留的快捷键继续由 Edge 处理。</p><div className="shortcut-list">{shortcuts.map(([name, key]) => <div key={name}><span>{name}</span><kbd>{key}</kbd></div>)}</div></>}
       {tab === 'status' && <StatusPanel model={props.current?.options.model || props.current?.model} tokens={props.current?.tokens} />}
-      {tab === 'connection' && <><div className="connection-brand"><BrandMark size={44} /><div><strong>cweb</strong><span>{props.connected ? 'Codex CLI 已连接' : '等待本地引擎连接'}</span></div><ShieldCheck size={20} /></div><dl className="connection-details"><dt>登录方式</dt><dd>{props.boot?.account || '未连接'}</dd><dt>运行方式</dt><dd>{props.boot?.sharedEngine ? '与终端共享原生引擎' : '独立 CLI 引擎'}</dd><dt>Codex 会话目录</dt><dd>{props.boot?.codexHome}</dd><dt>工作区</dt><dd>{props.workspaces.length} 个项目</dd></dl><div className="settings-callout">{props.boot?.sharedHistory ? <>与终端共享原生会话和归档。结束当前任务后，可复制顶部的终端继续命令。</> : <>当前使用独立会话目录。</>}<br />修改 CLI 连接配置后运行 <code>cweb restart</code>。</div><button className="primary" onClick={props.onReconnect}>重新连接</button><p className="settings-footnote">独立社区工具，不属于 OpenAI 或 DeepSeek 官方产品。</p></>}
+      {tab === 'connection' && <ConnectionPanel boot={props.boot} connected={props.connected} online={props.online} runtime={props.runtime} thread={props.thread} onReconnect={props.onReconnect} />}
     </div>
   </div>
 }

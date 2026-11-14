@@ -1,0 +1,14 @@
+.elicitation-card { padding: 0 15px 12px; min-width: 0; }
+.elicitation-heading { position: sticky; top: 0; z-index: 1; padding-top: 8px; background: var(--surface-raised); border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.elicitation-source { font-size: 12px; color: var(--muted); }
+.elicitation-message { white-space: pre-wrap; line-height: 1.6; margin: 5px 0 10px; max-height: 96px; overflow: auto; overflow-wrap: anywhere; }
+.elicitation-field { scroll-margin-top: 120px; }
+.elicitation-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.elicitation-field > label { font-size: 13px; font-weight: 500; }
+.elicitation-field small { font-size: 12px; color: var(--muted); }
+.elicitation-field input:not([type="checkbox"]), .elicitation-field select { width: 100%; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-recessed); }
+.elicitation-field fieldset { display: flex; flex-wrap: wrap; gap: 12px; border: 1px solid var(--line); border-radius: 7px; padding: 10px; }
+.elicitation-field fieldset label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.elicitation-link { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 14px; }
+.elicitation-link span { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.elicitation-error { color: var(--danger); font-size: 13px; }

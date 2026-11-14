@@ -22,8 +22,10 @@ function session(name, count, paragraphs = 6) {
   })) }
 }
 const short = session('短对话回溯', 2), long = session('长对话回溯', 100)
-const sparse = session('长步骤回溯', 2)
-for (const turn of sparse.turns) turn.items.splice(1, 0, ...Array.from({ length: 80 }, (_, index) => ({ id: `${turn.id}-detail-${index}`, type: 'agentMessage', phase: 'commentary', text: `正在检查演示步骤 ${index + 1}。\n\n` + '只读检查项目结构与文件。'.repeat(5) })))
+const sparse = session('长回答回溯', 2)
+// Commentary now forms one lazy step group, so it no longer exhausts the
+// 60-row window. Independent answers exercise an actually absent prompt.
+for (const turn of sparse.turns) turn.items.splice(1, 0, ...Array.from({ length: 80 }, (_, index) => ({ id: `${turn.id}-detail-${index}`, type: 'agentMessage', phase: 'final_answer', text: `补充演示回答 ${index + 1}。\n\n` + '只读检查项目结构与文件。'.repeat(5) })))
 await writeFile(store, JSON.stringify(Object.fromEntries([short, long, sparse].map(row => [row.id, row]))))
 const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: store } })
 const bridge = new Bridge(rpc, new Workspace(cwd), resolve(root, 'home'), resolve(root, 'data'))

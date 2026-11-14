@@ -81,6 +81,7 @@ export function projectThread(value: unknown): ThreadView {
   }))
   return {
     id: string(raw.id), revision: 0, title: string(raw.name) || string(raw.preview) || '新会话',
+    ...(string(raw.forkedFromId) ? { forkedFromId: string(raw.forkedFromId) } : {}),
     ...(raw.historyMode === 'legacy' || raw.historyMode === 'paginated' ? { historyMode: raw.historyMode } : {}),
     cwd: string(raw.cwd), model: string(raw.model),
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now() / 1000,

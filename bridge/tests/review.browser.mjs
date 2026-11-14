@@ -134,11 +134,16 @@ try {
 
   // The new user item can arrive before the HTTP acknowledgement. Reopening
   // that record while awaiting the reply must survive the late acknowledgement.
+  // Keep the historical summary mounted for this acknowledgement race test;
+  // collapsing it on new input is independently covered by activity-collapse.
+  await bridge.updatePreferences({ activityCollapseTiming: 'never' })
   await rpc.call('test/append',{threadId:background.id,text:recorded.single});await question.waitFor()
-  const delayedReply=async route=>{const response=await route.fetch();await new Promise(resolve=>setTimeout(resolve,1000));await route.fulfill({response})}
+  let releaseReply; const replyGate=new Promise(resolve=>releaseReply=resolve)
+  const delayedReply=async route=>{const response=await route.fetch();await replyGate;await route.fulfill({response})}
   await page.route(`**/api/threads/${background.id}/message`,delayedReply)
   await question.getByRole('radio',{name:'拦停时有震动',exact:true}).check();await question.getByRole('button',{name:'提交回答',exact:true}).click();await question.waitFor({state:'hidden'})
   await page.locator('.choice-summary').last().getByRole('button',{name:'查看选项',exact:true}).click();await question.waitFor()
+  releaseReply()
   await question.getByText('已提交：拦停时有震动',{exact:true}).waitFor();await page.waitForTimeout(250);assert.equal(await question.isVisible(),true)
   await question.getByRole('button',{name:'关闭记录',exact:true}).click();await question.waitFor({state:'hidden'});await page.unroute(`**/api/threads/${background.id}/message`,delayedReply)
   assert.deepEqual(errors, [])

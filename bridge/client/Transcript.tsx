@@ -26,7 +26,7 @@ function transcriptRows(items: Item[]): Row[] {
 
 /** Keep keystrokes outside the Markdown tree; hydrate older messages on demand. */
 export interface MessageJump { id: string; seq: number }
-export const Transcript = memo(function Transcript({ thread, loading, approvals, expanded = false, collapseTiming = 'next-input', jumpTo, follow, paused, onEdit, editDisabled = false }: { thread?: ThreadView; loading: boolean; approvals: number; expanded?: boolean; collapseTiming?: ActivityCollapseTiming; jumpTo?: MessageJump | null; follow: MutableRefObject<boolean>; paused: boolean; onEdit?: (item: Item) => void; editDisabled?: boolean }) {
+export const Transcript = memo(function Transcript({ thread, loading, approvals, expanded = false, collapseTiming = 'next-input', jumpTo, follow, paused, onEdit, onFork, editDisabled = false }: { thread?: ThreadView; loading: boolean; approvals: number; expanded?: boolean; collapseTiming?: ActivityCollapseTiming; jumpTo?: MessageJump | null; follow: MutableRefObject<boolean>; paused: boolean; onEdit?: (item: Item) => void; onFork?: (item: Item) => void; editDisabled?: boolean }) {
   const [page, setPage] = useState<HistoryPage | null>(null)
   const [manualOpen, setManualOpen] = useState<Record<string, boolean>>({})
   const container = useRef<HTMLDivElement>(null); const handled = useRef(-1)
@@ -132,7 +132,7 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
   return <div className="transcript" ref={container} data-window-first-id={rendered[0]?.items[0].id} data-window-last-id={rendered.at(-1)?.items.at(-1)?.id} data-window-rows={rendered.length}>{hidden > 0 && <button className="history-load history-load-older" type="button" onClick={earlier}><ChevronUp size={16} />显示更早的消息 · 还有 {hidden} 条</button>}
     {items.length ? rendered.map(row => {
       const item = row.items[0]; const last = row.items.at(-1)!; const run = runEnds.get(last.id)
-      return <Fragment key={row.id}>{row.id === rows[tailStart]?.id && gap}{row.process ? <ActivityGroup items={row.items} expanded={isOpen(row)} onToggle={() => toggle(row)} /> : <TranscriptItem item={item} autoRecovery={Boolean(item.turnId && recoveryTurns.has(item.turnId))} onEdit={item.type === 'userMessage' && item.status !== 'sending' ? onEdit : undefined} editDisabled={editDisabled} />}{run && <RunSummary run={run} latest={(!page || arrival >= 0) && run.id === thread?.runs?.at(-1)?.id} />}</Fragment>
+      return <Fragment key={row.id}>{row.id === rows[tailStart]?.id && gap}{row.process ? <ActivityGroup items={row.items} expanded={isOpen(row)} onToggle={() => toggle(row)} /> : <TranscriptItem item={item} autoRecovery={Boolean(item.turnId && recoveryTurns.has(item.turnId))} onEdit={item.type === 'userMessage' && item.status !== 'sending' ? onEdit : undefined} onFork={item.type === 'userMessage' && item.status !== 'sending' ? onFork : undefined} editDisabled={editDisabled} />}{run && <RunSummary run={run} latest={(!page || arrival >= 0) && run.id === thread?.runs?.at(-1)?.id} />}</Fragment>
     }) : <div className="thread-empty"><Sparkles size={22} /><p>会话已准备好，写下你想完成的事。</p></div>}
     {tailStart === rows.length && gap}{(!page || arrival >= 0) && <>{thread?.error && <Notice text={thread.error} />}
     {thread?.status === 'interrupted' && <div className="turn-end">任务已停止 · 可以继续发送消息</div>}

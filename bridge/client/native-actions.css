@@ -1,0 +1,9 @@
+.native-action-dialog { width: min(560px, calc(100vw - 24px)); }
+.native-action-dialog form { padding: 6px 22px 20px; }
+.native-action-dialog p { font-size: 13px; line-height: 1.7; }
+.native-action-dialog select, .native-action-dialog textarea { padding: 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-recessed); color: var(--ink); width: 100%; margin-top: 7px; resize: vertical; }
+.native-action-tabs { display: flex; padding: 4px; gap: 4px; background: var(--surface-recessed); border-radius: 9px; }
+.native-action-tabs button { flex: 1; padding: 8px; }
+.native-action-tabs [aria-pressed="true"] { background: var(--selected); }
+.native-action-error { color: var(--danger); }
+.fork-source { margin: 0 0 8px; font-size: 12px; color: var(--muted); }

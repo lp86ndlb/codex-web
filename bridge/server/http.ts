@@ -96,7 +96,7 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
     if (path === '/api/bootstrap' && req.method === 'GET') {
       res.setHeader('Set-Cookie', `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/`)
       try { json(res, { ...await bridge.bootstrap(), token }) }
-      catch (error) { json(res, { ...await bridge.preferences.snapshot(), queue: bridge.queue(), token, root: bridge.catalog.list()[0]?.path || '', workspaces: bridge.catalog.list(), plugins: { todoNote: bridge.plugin.enabled }, codexHome: bridge.codexHome,
+      catch (error) { json(res, { capabilities: { diagnostics: true, durableMessages: true }, ...await bridge.preferences.snapshot(), queue: bridge.queue(), token, root: bridge.catalog.list()[0]?.path || '', workspaces: bridge.catalog.list(), plugins: { todoNote: bridge.plugin.enabled }, codexHome: bridge.codexHome,
         runtime: { state: 'failed', error: errorMessage(error) }, models: [], account: '未连接', threads: bridge.list() }) }
       return
     }
@@ -116,6 +116,31 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
       json(res, { ok: true }); return
     }
     const threadMatch = /^\/api\/threads\/([^/]+)(?:\/(message|edit|interrupt|rename|archive|restore|compact|queue|options|release|handoff|todo-connect|todo-link|snapshot|goal))?$/.exec(path)
+    const deliveryMatch = /^\/api\/threads\/([^/]+)\/delivery\/([^/]+)$/.exec(path)
+    if (deliveryMatch && req.method === 'GET') { json(res, await bridge.delivery(decodeURIComponent(deliveryMatch[1]), z.string().uuid().parse(deliveryMatch[2]))); return }
+    const nativeMatch = /^\/api\/threads\/([^/]+)\/(fork|review)$/.exec(path)
+    if (nativeMatch && req.method === 'POST') {
+      const id = decodeURIComponent(nativeMatch[1])
+      if (nativeMatch[2] === 'fork') {
+        const input = z.object({ beforeTurnId: z.string().min(1).max(200).optional() }).strict().parse(await body(req))
+        json(res, await bridge.fork(id, input.beforeTurnId), 201)
+      } else {
+        const input = z.object({ target: z.discriminatedUnion('type', [
+          z.object({ type: z.literal('uncommittedChanges') }).strict(),
+          z.object({ type: z.literal('baseBranch'), branch: z.string().trim().min(1).max(500) }).strict(),
+          z.object({ type: z.literal('commit'), sha: z.string().regex(/^[a-fA-F0-9]{7,64}$/) }).strict(),
+          z.object({ type: z.literal('custom'), instructions: z.string().trim().min(1).max(8000) }).strict(),
+        ]) }).strict().parse(await body(req))
+        json(res, await bridge.review(id, input.target))
+      }
+      return
+    }
+    if (path === '/api/diagnostics' && req.method === 'GET') { json(res, await bridge.diagnostics.snapshot()); return }
+    if (path === '/api/diagnostics' && req.method === 'POST') {
+      const input = z.object({ action: z.enum(['start', 'cancel']) }).strict().parse(await body(req))
+      if (input.action === 'start') bridge.diagnostics.start(); else bridge.diagnostics.cancel()
+      json(res, await bridge.diagnostics.snapshot()); return
+    }
     if (path === '/api/preferences' && req.method === 'GET') { json(res, await bridge.preferences.snapshot()); return }
     if (path === '/api/preferences' && req.method === 'POST') {
       json(res, await bridge.updatePreferences(preferencesSchema.partial().parse(await body(req)))); return
@@ -258,8 +283,8 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
     }
     if (path === '/api/answer' && req.method === 'POST') {
       const input = z.object({ id: z.string().max(200), decision: z.enum(['accept', 'decline', 'cancel']),
-        answers: z.record(z.array(z.string().max(20_000)).max(10)).optional() }).strict().parse(await body(req))
-      bridge.answer(input.id, input.decision, input.answers); json(res, { ok: true }); return
+        answers: z.record(z.array(z.string().max(20_000)).max(10)).optional(), content: z.record(z.unknown()).optional() }).strict().parse(await body(req))
+      bridge.answer(input.id, input.decision, input.answers, input.content); json(res, { ok: true }); return
     }
     if (req.method === 'GET') {
       const target = url.searchParams.get('path') || '.'

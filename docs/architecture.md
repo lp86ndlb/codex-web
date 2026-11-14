@@ -64,6 +64,9 @@ codex-web/
 | 文件边界 | [`catalog.ts`](../bridge/server/catalog.ts)、[`workspace.ts`](../bridge/server/workspace.ts)：工作区和真实路径校验 |
 | 页面组合 | [`bridge/client/App.tsx`](../bridge/client/App.tsx)：会话、设置、输入和面板协调 |
 | 长会话与阅读 | [`Transcript.tsx`](../bridge/client/Transcript.tsx)、[`useConversationScroll.ts`](../bridge/client/useConversationScroll.ts) |
+| 连接诊断 | [`diagnostics.ts`](../bridge/server/diagnostics.ts)、[`ConnectionPanel.tsx`](../bridge/client/ConnectionPanel.tsx)：有界事件记录、独立诊断进程与分层状态 |
+| 草稿与提交回执 | [`composer-cache.ts`](../bridge/client/composer-cache.ts)、[`submissions.ts`](../bridge/server/submissions.ts)：浏览器草稿与服务端提交去重 |
+| 原生交互 | [`elicitation.ts`](../bridge/shared/elicitation.ts)、[`ElicitationCard.tsx`](../bridge/client/ElicitationCard.tsx)、[`NativeActions.tsx`](../bridge/client/NativeActions.tsx)：MCP 表单、分支与审查 |
 | 共同协议 | [`bridge/shared/types.ts`](../bridge/shared/types.ts)：界面与服务的数据类型 |
 
 ## 数据归属
@@ -75,9 +78,13 @@ codex-web/
 | 网页工作区名称、选项、附件、便签、GenUI 面板和附加统计 | `bridge/.data/`，可由 `CWEB_DATA_DIR` 更改 | 不包含 |
 | 侧栏顺序、开合与部分交互偏好 | 当前浏览器本地存储 | 不包含 |
 | 未提交的异步问答草稿 | 当前标签页的会话存储 | 不包含 |
+| 普通输入草稿、附件引用、编辑状态与待核对消息 | 当前浏览器本地存储，按话题保存 | 不包含 |
+| 提交 ID、输入指纹与结果状态 | `bridge/.data/submission-receipts.json`；不存消息正文 | 不包含 |
 | 独立模式的 CLI 数据 | cweb 数据目录下的 `codex-home/` | 不包含 |
 
 原生历史仍以 CLI 为准。支持分页存储的会话通过 CLI 历史接口读取；界面采用最近消息窗口，较早消息按需显示。网页统计仅补充观测数据，不复制一套模型会话历史作为执行依据。
+
+提交回执采用原子 JSON 存储，最多保留 2,000 条；优先淘汰已明确接受或拒绝的旧回执，未核对记录不自动重放。回执保留期内，相同 ID 和内容不会再次启动任务；新 ID、用户恢复草稿后的重新发送、进程内队列不构成跨所有操作的永久去重保证。连接事件最多保留 100 条，仅在内存记录类别和时间，不保存错误中的用户正文。
 
 插件只实现各自需要的宿主适配，不是通用 DSH 插件运行时。便签数据按会话保存，完成操作需要用户验收；GenUI 的纯本地交互不请求模型，需要 agent 处理的操作回到对应会话。来源与授权见 [便签说明](../bridge/plugins/todo-note/README.md)、[GenUI 说明](../bridge/plugins/genui/README.md) 和 [界面组件说明](../bridge/client/dsh/README.md)。
 

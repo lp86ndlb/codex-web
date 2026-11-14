@@ -65,6 +65,24 @@ createInterface({ input: process.stdin }).on('line', line => {
   else if (request.method === 'account/read') respond({ account: { type: 'test-fixture', planType: 'test-plan' } })
   else if (request.method === 'account/rateLimits/read') respond({ rateLimits: { limitId: 'codex', primary: { usedPercent: 35, windowDurationMins: 300, resetsAt: 1800000000 }, secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: 1800500000 } } })
   else if (request.method === 'thread/list') respond({ data: Object.values(threads).filter(thread => Boolean(thread.archived) === Boolean(params.archived)).map(thread => ({ ...thread, turns: [] })), nextCursor: null })
+  else if (request.method === 'thread/fork') {
+    const id = randomUUID(), copy = structuredClone(thread)
+    const boundary = params.beforeTurnId ? copy.turns.findIndex(turn => turn.id === params.beforeTurnId) : copy.turns.length
+    if (boundary < 0) { send({ id: request.id, error: { code: -32602, message: 'Invalid boundary' } }); return }
+    threads[id] = { ...copy, id, forkedFromId: thread.id, turns: copy.turns.slice(0, boundary), updatedAt: Date.now() / 1000 }
+    loaded.add(id); save(); respond({ thread: { ...threads[id], ...(params.excludeTurns ? { turns: [] } : {}) }, model: 'fixture' })
+  }
+  else if (request.method === 'review/start') {
+    const turn = { id: randomUUID(), status: 'inProgress', items: [], startedAt: Date.now() / 1000 }
+    thread.turns.push(turn); save()
+    notify('turn/started', { threadId: thread.id, turn }); respond({ reviewThreadId: thread.id, turn })
+    item(thread, turn, { id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text: '原生审查测试：已检查指定范围。' }); finish(thread, turn)
+  }
+  else if (request.method === 'test/elicitation') {
+    const turn = thread.turns.at(-1), id = params.id || 9010
+    requests.set(id, { thread, turn })
+    respond({}); send({ id, method: 'mcpServer/elicitation/request', params: { threadId: thread.id, turnId: turn.id, serverName: 'fixture-mcp', ...params.request } })
+  }
   else if (request.method === 'thread/start') {
     if (params.dynamicTools?.some(tool => !['function', 'namespace'].includes(tool.type))) { send({ id: request.id, error: { code: -32602, message: 'dynamic tool format invalid' } }); return }
     const id = randomUUID()

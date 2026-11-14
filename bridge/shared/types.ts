@@ -73,6 +73,7 @@ export interface Question {
 }
 
 export interface Approval {
+  elicitation?: import('./elicitation.ts').Elicitation
   id: string
   method: string
   threadId: string
@@ -85,6 +86,7 @@ export interface Approval {
 }
 
 export interface ThreadView {
+  forkedFromId?: string
   historyMode?: 'legacy' | 'paginated'
   choicePending?: boolean
   externalOwner?: number | null
@@ -134,10 +136,12 @@ export interface ModelOption {
 export interface RuntimeStatus {
   state: 'stopped' | 'starting' | 'ready' | 'failed'
   error: string | null
+  userAgent?: string
+  connectedAt?: number
 }
 
 export interface Bootstrap {
-  capabilities?: { fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
+  capabilities?: { diagnostics?: boolean; durableMessages?: boolean; nativeActions?: boolean; mcpElicitation?: boolean; fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
   token: string
   root: string
   workspaces: WorkspaceInfo[]
