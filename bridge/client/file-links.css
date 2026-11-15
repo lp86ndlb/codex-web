@@ -5,3 +5,6 @@
 .local-file-kind { flex-shrink: 0; padding-left: 6px; border-left: 1px solid var(--line); font-size: .78em; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .local-file-label code { padding: 0; border: 0; background: transparent; font-size: inherit; }
 .markdown a.local-file-link:focus-visible { outline: 2px solid var(--ink-secondary); outline-offset: 2px; }
+.markdown a.external-web-link { text-decoration-thickness: 1px; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.external-web-link > .external-link-icon { display: inline-block; width: .85em; height: .85em; margin-right: 4px; vertical-align: -.1em; color: var(--muted); }
+.external-web-link:hover > .external-link-icon { color: currentColor; }

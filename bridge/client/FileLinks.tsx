@@ -2,7 +2,7 @@ import { createContext, useContext, type ReactNode } from 'react'
 import { defaultUrlTransform } from 'react-markdown'
 import { resolveChatLink } from '../shared/chat-links.ts'
 import type { AttachmentInfo } from '../shared/types.ts'
-import { File, FileCode2, FileText, Folder } from 'lucide-react'
+import { File, FileCode2, FileText, Folder, Link2 } from 'lucide-react'
 import './file-links.css'
 
 export interface FileDestination { path: string; line?: number; anchor?: string; imageUrl?: string }
@@ -36,7 +36,7 @@ export function chatUrlTransform(url: string, key: string) {
 export function ChatLink({ href = '', children }: { href?: string; children?: ReactNode }) {
   const scope = useContext(FileLinks)
   const target = resolveChatLink(href, { root: scope.root, cwd: scope.cwd, origin: window.location.origin })
-  if (target.kind === 'external') return <a href={target.href} target="_blank" rel="noopener noreferrer">{children}</a>
+  if (target.kind === 'external') return <a href={target.href} className="external-web-link" title={new URL(target.href, window.location.origin).href} target="_blank" rel="noopener noreferrer"><Link2 className="external-link-icon" size={13} aria-hidden="true" />{children}</a>
   if (target.kind === 'anchor') return <a href={`#${encodeURIComponent(target.anchor)}`} onClick={scope.anchor ? event => { event.preventDefault(); scope.anchor!(target.anchor) } : undefined}>{children}</a>
   if (target.kind !== 'file' || !scope.open || !scope.workspaceId) return <span title={href || undefined}>{children}</span>
   const name = target.path.split('/').at(-1) || '/', extension = /\.([a-z0-9]{1,10})$/i.exec(name)?.[1].toLowerCase()
