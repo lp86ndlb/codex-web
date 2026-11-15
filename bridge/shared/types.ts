@@ -8,9 +8,12 @@ export interface Preferences extends SessionOptions {
   activityCollapseTiming: ActivityCollapseTiming
   autoRecovery: boolean
   imageInputMode: 'on-demand' | 'inline'
+  filePreviewLayout: 'dialog' | 'side'
+  inlineImageSize: 'comfortable' | 'compact'
+  imagePreviewZoom: 'fit' | 'actual'
 }
 export const defaultPreferences: Preferences = { model: '', effort: '', mode: 'workspace-write', approvalPolicy: 'on-request',
-  theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: false, genui: true, showActivityDetails: true, activityCollapseTiming: 'next-input', autoRecovery: true, imageInputMode: 'on-demand' }
+  theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: false, genui: true, showActivityDetails: true, activityCollapseTiming: 'next-input', autoRecovery: true, imageInputMode: 'on-demand', filePreviewLayout: 'dialog', inlineImageSize: 'comfortable', imagePreviewZoom: 'fit' }
 export interface UsageWindow { usedPercent: number; windowDurationMins?: number | null; resetsAt?: number | null }
 export interface UsageLimits { limitName?: string | null; primary?: UsageWindow | null; secondary?: UsageWindow | null; credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | null } | null }
 export interface AccountStatus { accountType: string; planType: string; limits: UsageLimits[]; error?: string; updatedAt?: number; stale?: boolean }
@@ -148,7 +151,7 @@ export interface RuntimeStatus {
 }
 
 export interface Bootstrap {
-  capabilities?: { pagedHistory?: boolean; diagnostics?: boolean; durableMessages?: boolean; nativeActions?: boolean; mcpElicitation?: boolean; fileReferences: boolean; filePreview?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
+  capabilities?: { pagedHistory?: boolean; diagnostics?: boolean; durableMessages?: boolean; nativeActions?: boolean; mcpElicitation?: boolean; fileReferences: boolean; filePreview?: boolean; imagePreviewExperience?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
   token: string
   root: string
   workspaces: WorkspaceInfo[]

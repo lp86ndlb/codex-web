@@ -8,5 +8,5 @@
 .local-image-caption > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-image-caption button { flex-shrink: 0; gap: 4px; padding: 3px 4px; font-size: 11px; }
 .local-image-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
-.file-preview-image-stage { display: flex; align-items: center; justify-content: center; min-height: 100%; padding: 20px; }
-.file-preview-image-stage img { display: block; max-width: 100%; max-height: calc(100dvh - 240px); width: auto; height: auto; object-fit: contain; border-radius: 6px; }
+.local-image[data-size=compact] .local-image-stage img { max-height: 220px; }
+.local-image-stage:not(:disabled) { cursor: zoom-in; }

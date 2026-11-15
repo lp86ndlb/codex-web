@@ -96,3 +96,48 @@ test('HTTP local images require the same-origin workspace session and always ret
     assert.equal((await fetch(url('image', '../outside.png'), { headers })).status, 403)
   } finally { await app.close(); await f.close() }
 })
+
+test('temporary images need an assistant Markdown reference from this workspace and retain all file checks', async () => {
+  const { projectThread } = await import('../server/projection.ts')
+  const f = await fixture(), temporary = await mkdtemp('/tmp/cweb-image-access-')
+  const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd: f.project,
+    env: { ...process.env, FAKE_STORE: resolve(f.root, 'store.json') }, timeoutMs: 3000 })
+  const bridge = new Bridge(rpc, f.workspace, resolve(f.root, 'home'), resolve(f.root, 'data'))
+  const opened: string[] = []
+  const app = createHttpServer({ bridge, dist: resolve('dist'), openFile: async path => { opened.push(path) } })
+  await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve))
+  const address = app.server.address(); assert.ok(address && typeof address === 'object')
+  const base = `http://127.0.0.1:${address.port}`
+  try {
+    const image = resolve(temporary, '对比 图.png'), unlinked = resolve(temporary, 'other.png'), alias = resolve(temporary, 'alias.png'), bad = resolve(temporary, 'bad.png')
+    await writeFile(image, tinyPng()); await writeFile(unlinked, tinyPng()); await symlink(image, alias); await writeFile(bad, '<script>bad</script>')
+    const boot = await fetch(base + '/api/bootstrap'), data = await boot.json(), workspace = data.workspaces[0].id
+    const headers = { cookie: boot.headers.get('set-cookie')!.split(';')[0], origin: base, 'x-bridge-token': data.token, 'content-type': 'application/json' }
+    const thread = projectThread({ id: 'artifacts', cwd: f.project, turns: [{ id: 'turn', status: 'completed', items: [{ id: 'answer', type: 'agentMessage', text: `![对比](<${image}>)\n\n[链接](${alias})\n\n![坏图片](${bad})` }] }] })
+    bridge.threads.set(thread.id, thread)
+    const get = (kind: string, path: string, id = thread.id) => fetch(`${base}/api/${kind}?${new URLSearchParams({ workspace, path, thread: id })}`, { headers })
+    const info = await get('image-info', image); assert.equal(info.status, 200)
+    assert.equal((await info.json()).temporary, true)
+    assert.deepEqual(Buffer.from(await (await get('image', image)).arrayBuffer()), tinyPng())
+    assert.equal((await get('image', image, 'missing-thread')).status, 403)
+    assert.equal((await get('image', unlinked)).status, 403)
+    assert.equal((await get('image', alias)).status, 403)
+    assert.equal((await get('image', bad)).status, 415)
+    assert.equal((await get('files', temporary)).status, 403, 'An image grant must not expose its directory in the browser')
+    const open = (path: string, containingFolder = false) => fetch(base + '/api/open-file', { method: 'POST', headers, body: JSON.stringify({ workspace, path, thread: thread.id, containingFolder }) })
+    assert.equal((await open(image)).status, 200); assert.equal(opened.at(-1), image)
+    assert.equal((await open(image, true)).status, 200); assert.equal(opened.at(-1), temporary)
+    assert.equal((await open(temporary)).status, 403)
+    assert.equal((await open(bad)).status, 415)
+    assert.equal((await open(unlinked, true)).status, 403)
+    thread.cwd = resolve(f.root, 'other-project')
+    assert.equal((await get('image', image)).status, 403)
+    thread.cwd = f.project
+    thread.items[0].text = `\`\`\`md\n![仅代码示例](<${image}>)\n\`\`\``
+    assert.equal((await get('image', image)).status, 403, 'Code examples are not displayed artifacts; changed text invalidates the reference cache')
+    thread.items[0].text = `![引用式图片][result]\n\n[result]: <${image}>`
+    assert.equal((await get('image', image)).status, 200)
+    thread.items[0].type = 'userMessage'
+    assert.equal((await get('image', image)).status, 403)
+  } finally { await app.close(); await f.close(); await rm(temporary, { recursive: true, force: true }) }
+})

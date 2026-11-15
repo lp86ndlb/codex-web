@@ -443,7 +443,9 @@ try {
   await mobile.getByRole('button', { name: '显示工作区面板' }).click()
   await mobile.getByRole('button', { name: '文件', exact: true }).click()
   await mobile.getByRole('button', { name: 'hello.ts', exact: true }).click()
-  await mobile.locator('.source-code').filter({ hasText: '你好' }).waitFor()
+  await mobile.getByRole('dialog', { name: '文件预览', exact: true }).waitFor()
+  assert.match(await mobile.getByLabel('文件源码', { exact: true }).inputValue(), /你好/)
+  await mobile.getByRole('button', { name: '关闭文件预览', exact: true }).click()
   await mobile.getByRole('button', { name: '关闭工作区面板' }).click()
   const retryPage = await browser.newPage({ viewport: { width: 1100, height: 850 } })
   let rejectedStream = false

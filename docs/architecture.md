@@ -61,7 +61,7 @@ codex-web/
 | HTTP 与事件 | [`bridge/server/http.ts`](../bridge/server/http.ts)：接口、同源校验和 SSE |
 | CLI 协议 | [`rpc.ts`](../bridge/server/rpc.ts)、[`bridge.ts`](../bridge/server/bridge.ts)：连接、请求和会话协调 |
 | 展示投影 | [`projection.ts`](../bridge/server/projection.ts)：将原生事件和历史映射为界面数据 |
-| 文件边界 | [`catalog.ts`](../bridge/server/catalog.ts)、[`workspace.ts`](../bridge/server/workspace.ts)：工作区和真实路径校验 |
+| 文件边界 | [`catalog.ts`](../bridge/server/catalog.ts)、[`workspace.ts`](../bridge/server/workspace.ts)、[`image-access.ts`](../bridge/server/image-access.ts)：工作区和真实路径校验；临时图片限于当前对话中助手的 Markdown 引用 |
 | 页面组合 | [`bridge/client/App.tsx`](../bridge/client/App.tsx)：会话、设置、输入和面板协调 |
 | 长会话与阅读 | [`Transcript.tsx`](../bridge/client/Transcript.tsx)、[`useConversationScroll.ts`](../bridge/client/useConversationScroll.ts) |
 | 浏览器缓存与后台状态 | [`view-cache.ts`](../bridge/client/view-cache.ts)：后台轻量状态、最近会话缓存和运行目标保护 |

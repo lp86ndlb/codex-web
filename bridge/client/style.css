@@ -588,7 +588,8 @@ input[type='checkbox']:not(.switch-control input):not([data-cweb-check]):active 
 .draft-attachments, .message-attachments { display: flex; flex-wrap: wrap; gap: 9px; }
 .draft-attachments { padding: 13px 14px 0; max-height: 190px; overflow: auto; }
 .attachment-chip { display: flex; align-items: center; gap: 9px; padding: 7px; border: 1px solid var(--line); border-radius: 10px; max-width: 240px; background: var(--sidebar); }
-.attachment-chip > img { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; }
+.attachment-preview { flex-shrink: 0; display: block; cursor: zoom-in; }
+.attachment-preview img { display: block; width: 44px; height: 44px; border-radius: 6px; object-fit: cover; }
 .attachment-chip > span { min-width: 0; max-width: 140px; font-size: 12px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .attachment-chip small { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
 .skill-chip { display: flex; align-items: center; gap: 4px; padding: 4px 5px 4px 10px; border-radius: 9px; background: var(--selected); font-size: 12px; }

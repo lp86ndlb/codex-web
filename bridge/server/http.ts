@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { readFile, realpath } from 'node:fs/promises'
-import { extname, resolve, sep } from 'node:path'
+import { readFile, realpath, stat } from 'node:fs/promises'
+import { dirname, extname, resolve, sep } from 'node:path'
 import { z } from 'zod'
 import type { Bridge } from './bridge.ts'
 import type { StreamEvent } from '../shared/types.ts'
@@ -12,6 +12,7 @@ import { attachmentLimit } from './attachments.ts'
 import { projectThread } from './projection.ts'
 import { record } from './errors.ts'
 import { openLocalPath } from './desktop.ts'
+import { imageAccess } from './image-access.ts'
 
 const messageSchema = z.object({
   text: z.string().trim().max(100_000), model: z.string().max(200).optional(),
@@ -110,9 +111,12 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
       }
     }
     if (path === '/api/open-file' && req.method === 'POST') {
-      const input = z.object({ workspace: z.string().min(1).max(4096), path: z.string().min(1).max(4096) }).strict().parse(await body(req))
-      const target = await bridge.catalog.get(input.workspace).localOpenTarget(input.path)
-      await openFile(target)
+      const input = z.object({ workspace: z.string().min(1).max(4096), path: z.string().min(1).max(4096), thread: z.string().max(200).optional(), containingFolder: z.boolean().optional() }).strict().parse(await body(req))
+      if (/^[a-z][a-z0-9+.-]*:/i.test(input.path)) throw new BridgeError('LOCAL_PATH', '请选择工作区内的本地文件或目录')
+      const access = imageAccess(bridge.catalog.get(input.workspace), input.path, input.thread ? bridge.threads.get(input.thread) : undefined)
+      if (access.temporary) await access.workspace.imageInfo(access.path)
+      const target = await access.workspace.localOpenTarget(access.path)
+      await openFile(input.containingFolder && !(await stat(target)).isDirectory() ? dirname(target) : target)
       json(res, { ok: true }); return
     }
     const threadMatch = /^\/api\/threads\/([^/]+)(?:\/(message|edit|interrupt|rename|archive|restore|compact|queue|options|release|handoff|todo-connect|todo-link|snapshot|goal))?$/.exec(path)
@@ -292,9 +296,12 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
     if (req.method === 'GET') {
       const target = url.searchParams.get('path') || '.'
       if (path === '/api/image' || path === '/api/image-info') {
-        const workspace = bridge.catalog.get(url.searchParams.get('workspace') || '')
-        if (path === '/api/image-info') { json(res, await workspace.imageInfo(target)); return }
-        const image = await workspace.image(target)
+        const access = imageAccess(bridge.catalog.get(url.searchParams.get('workspace') || ''), target, bridge.threads.get(url.searchParams.get('thread') || ''))
+        if (path === '/api/image-info') {
+          const info = await access.workspace.imageInfo(access.path)
+          json(res, { ...info, ...(access.temporary ? { path: access.path, temporary: true } : {}) }); return
+        }
+        const image = await access.workspace.image(access.path)
         res.writeHead(200, { 'Content-Type': image.mime, 'Content-Length': image.data.length, 'Cache-Control': 'no-store',
           'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(image.path.split('/').at(-1) || 'image').replaceAll("'", '%27')}`,
           'Cross-Origin-Resource-Policy': 'same-origin' })

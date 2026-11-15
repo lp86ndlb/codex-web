@@ -63,7 +63,7 @@ try {
   assert.equal(opened.length, 0, 'Opening a preview must never launch a desktop application automatically')
   await dialog.getByRole('button', { name: '使用默认应用打开', exact: true }).click()
   await dialog.getByText('已交给默认应用', { exact: true }).waitFor()
-  assert.deepEqual(opened.at(-1), { workspace: bridge.catalog.list()[0].id, path: '.cache/privacy-review-demo.md' })
+  assert.deepEqual(opened.at(-1), { workspace: bridge.catalog.list()[0].id, path: '.cache/privacy-review-demo.md', thread: id })
   rejectOpen = true
   await dialog.getByRole('button', { name: '使用默认应用打开', exact: true }).click()
   await dialog.getByRole('alert').filter({ hasText: '演示：未设置默认应用' }).waitFor()
@@ -134,8 +134,8 @@ try {
   await dialog.getByRole('button', { name: '返回上一个文件', exact: true }).click(); await documentView.getByRole('heading', { name: '演示项目', exact: true }).waitFor()
   for (let i = 0; i < 50 && !slowSeen; i++) await page.waitForTimeout(20)
   assert.equal(slowSeen, true)
-  const lateResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/preview' && new URL(response.url()).searchParams.get('path')?.endsWith('/docs/slow.md'))
-  releaseSlow(); await (await lateResponse).finished(); await page.waitForTimeout(50)
+  // Back now aborts the fetch; a late server reply may never emit a browser response event.
+  releaseSlow(); await page.waitForTimeout(50)
   assert.equal(await documentView.getByRole('heading', { name: '过期的慢响应', exact: true }).count(), 0)
   await documentView.getByRole('heading', { name: '演示项目', exact: true }).waitFor()
   await page.screenshot({ path: resolve(output, 'file-links-desktop.png'), fullPage: true })
