@@ -27,7 +27,7 @@ const id = randomUUID(), store = resolve(root, 'sessions.json')
 const markdown = [
   `[绝对路径报告](${report})`, '[相对路径文档](README.md)', '[文档目录](docs)', '[源码第四行](src/main.ts#L4)',
   '[受保护文件](.env)', '[外部项目](https://github.com/example/example)', `[文件协议](file://${report})`,
-  '[危险协议](javascript:alert%281%29)', '[二进制文档](binary.pdf)',
+  '[危险协议](javascript:alert%281%29)', '[外部图片链接](https://example.com/chart.png)', '[二进制文档](binary.pdf)',
 ].join('\n\n')
 await writeFile(store, JSON.stringify({ [id]: { id, name: '文件预览验证', preview: '', cwd, updatedAt: Date.now() / 1000, turns: [{ id: 'history', status: 'completed', items: [{ id: 'u1', type: 'userMessage', content: [{ type: 'text', text: '检查文档链接。' }] }, { id: 'a1', type: 'agentMessage', phase: 'final_answer', text: markdown }] }] } }))
 const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: store } })
@@ -57,6 +57,11 @@ const close = async () => { await page.keyboard.press('Escape'); await dialog.wa
 let releaseSlow = () => {}, slowSeen = false
 try {
   await page.goto(base); await page.getByRole('button', { name: /文件预览验证/ }).first().click()
+  assert.ok((await chatLink('绝对路径报告').getAttribute('class')).includes('local-file-link'))
+  assert.equal(await chatLink('绝对路径报告').locator('.local-file-kind').textContent(), 'MD')
+  assert.equal(await chatLink('源码第四行').locator('.local-file-kind').textContent(), 'TS · L4')
+  assert.equal(await chatLink('外部图片链接').getAttribute('target'), '_blank')
+  assert.equal(await chatLink('外部图片链接').locator('img').count(), 0, 'External image URLs must not trigger speculative image downloads')
   await chatLink('绝对路径报告').click(); await documentView.getByRole('heading', { name: '演示隐私检查', exact: true }).waitFor()
   assert.equal(page.url(), base + '/', 'Opening a local document must not navigate to a static asset route')
   assert.equal(context.pages().length, 1, 'Local file previews must remain in the current tab')

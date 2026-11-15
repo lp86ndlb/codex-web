@@ -10,3 +10,15 @@
 .local-image-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
 .local-image[data-size=compact] .local-image-stage img { max-height: 220px; }
 .local-image-stage:not(:disabled) { cursor: zoom-in; }
+.local-image.local-image-file-card { width: min(420px, 100%); min-width: 0; margin: 5px 3px 5px 0; background: var(--surface); border-radius: 10px; }
+.markdown a.local-image-card-link { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px; text-decoration: none; color: var(--ink-secondary); transition: background .16s; }
+.markdown a.local-image-card-link:hover { color: var(--ink); text-decoration: none; background: var(--hover); }
+.local-image-card-link:focus-visible { outline: 2px solid var(--ink-secondary); outline-offset: -3px; border-radius: 9px; }
+.local-image-card-thumb { display: flex; align-items: center; justify-content: center; flex: 0 0 64px; height: 56px; border-radius: 6px; background: var(--surface-recessed); border: 1px solid var(--line); overflow: hidden; color: var(--muted); }
+.markdown .local-image-card-thumb img { display: block; width: 100%; height: 100%; margin: 0; border: 0; border-radius: 0; object-fit: contain; }
+.local-image-card-description { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 3px; line-height: 1.5; }
+.local-image-card-description strong { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-image-card-description > span { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.local-image-card-link > svg { flex-shrink: 0; color: var(--muted); margin: 0 3px; }
+.local-image-card-description .local-image-card-error { font-size: 11px; color: var(--danger); }
+.local-image-card-retry { align-self: flex-end; gap: 4px; margin: 0 10px 8px; font-size: 11px; }

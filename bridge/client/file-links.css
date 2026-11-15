@@ -1,0 +1,7 @@
+.markdown a.local-file-link { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; vertical-align: middle; padding: 3px 8px; margin: 2px 1px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink-secondary); text-decoration: none; font-size: .88em; line-height: 1.55; transition: background .16s, border-color .16s; }
+.markdown a.local-file-link:hover { background: var(--hover); border-color: var(--line-strong); color: var(--ink); text-decoration: none; }
+.local-file-link > svg { flex-shrink: 0; color: var(--muted); }
+.local-file-label { min-width: 0; overflow-wrap: anywhere; }
+.local-file-kind { flex-shrink: 0; padding-left: 6px; border-left: 1px solid var(--line); font-size: .78em; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.local-file-label code { padding: 0; border: 0; background: transparent; font-size: inherit; }
+.markdown a.local-file-link:focus-visible { outline: 2px solid var(--ink-secondary); outline-offset: 2px; }

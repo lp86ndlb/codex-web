@@ -9,8 +9,10 @@ import { cjkFriendlyStrong } from './dsh/markdown/cjkFriendlyStrong.ts'
 import { GenuiFence, GenuiMessage } from './GenuiHost.tsx'
 import { CodeBlock } from '../plugins/genui/client/cweb-primitives.tsx'
 import { ChoiceFence } from './ChoiceHost.tsx'
-import { ChatLink, chatUrlTransform } from './FileLinks.tsx'
-import { LocalImage } from './LocalImage.tsx'
+import { ChatLink, chatUrlTransform, FileLinks } from './FileLinks.tsx'
+import { LocalImage, isRasterImagePath } from './LocalImage.tsx'
+import { resolveChatLink } from '../shared/chat-links.ts'
+import type { Element } from 'hast'
 const MathRenderer = lazy(() => import('./MathText.tsx'))
 
 /** The DSH grammar preserves code and adds Chinese emphasis + TeX delimiters. */
@@ -27,6 +29,17 @@ function MathText({ source, display }: { source: string; display: boolean }) { r
 const GenuiAllowed = createContext(true)
 const CollapseCode = createContext(true)
 const ImagesStreaming = createContext(false)
+function MarkdownLink({ href = '', children, node }: { href?: string; children?: ReactNode; node?: Element }) {
+  const scope = useContext(FileLinks), streaming = useContext(ImagesStreaming)
+  const target = resolveChatLink(href, { root: scope.root, cwd: scope.cwd, origin: window.location.origin })
+  if (target.kind === 'file' && isRasterImagePath(target.path)) {
+    // A linked thumbnail must open its full-size target without nesting interactive controls.
+    const thumbnail = node?.children.find(child => child.type === 'element' && child.tagName === 'img')
+    if (thumbnail?.type === 'element') return <LocalImage path={href} alt={String(thumbnail.properties.alt || plainText(children))} streaming={streaming} />
+    return <LocalImage path={href} alt={plainText(children)} streaming={streaming} presentation="card" />
+  }
+  return <ChatLink href={href}>{children}</ChatLink>
+}
 function MarkdownImage({ alt, src }: { alt?: string; src?: string }) {
   const streaming = useContext(ImagesStreaming)
   if (!src) return <span className="muted">[图片：{alt || '未加载'}]</span>
@@ -57,7 +70,7 @@ export const Markdown = memo(function Markdown({ text, streaming = false, genui 
     ...(headingIds ? { h1: heading('h1'), h2: heading('h2'), h3: heading('h3'), h4: heading('h4'), h5: heading('h5'), h6: heading('h6') } : {}),
     pre: MarkdownPre,
     code: ({ className, children }) => /math-inline/.test(className || '') ? <MathText source={String(children || '')} display={false} /> : <code className={className}>{children}</code>,
-    a: ChatLink,
+    a: MarkdownLink,
     img: MarkdownImage,
   }}>{text || ' '}</ReactMarkdown></div></ImagesStreaming.Provider></CollapseCode.Provider></GenuiAllowed.Provider>
 })

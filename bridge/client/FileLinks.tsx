@@ -2,6 +2,8 @@ import { createContext, useContext, type ReactNode } from 'react'
 import { defaultUrlTransform } from 'react-markdown'
 import { resolveChatLink } from '../shared/chat-links.ts'
 import type { AttachmentInfo } from '../shared/types.ts'
+import { File, FileCode2, FileText, Folder } from 'lucide-react'
+import './file-links.css'
 
 export interface FileDestination { path: string; line?: number; anchor?: string; imageUrl?: string }
 export interface FileLinkScope {
@@ -37,8 +39,11 @@ export function ChatLink({ href = '', children }: { href?: string; children?: Re
   if (target.kind === 'external') return <a href={target.href} target="_blank" rel="noopener noreferrer">{children}</a>
   if (target.kind === 'anchor') return <a href={`#${encodeURIComponent(target.anchor)}`} onClick={scope.anchor ? event => { event.preventDefault(); scope.anchor!(target.anchor) } : undefined}>{children}</a>
   if (target.kind !== 'file' || !scope.open || !scope.workspaceId) return <span title={href || undefined}>{children}</span>
+  const name = target.path.split('/').at(-1) || '/', extension = /\.([a-z0-9]{1,10})$/i.exec(name)?.[1].toLowerCase()
+  const folder = /\/$/.test(href), code = /^(?:[cm]?[jt]sx?|py|rs|go|java|sh|bash|cpp|cc|c|h|hpp|css|html|json|ya?ml|toml|xml|sql)$/.test(extension || '')
+  const Icon = folder ? Folder : code ? FileCode2 : /^(?:md|mdx|txt|pdf|log|csv)$/.test(extension || '') ? FileText : File
   return <a href={href} className="local-file-link" title={`预览 ${target.path}${target.line ? `:${target.line}` : ''}`} onClick={event => {
     event.preventDefault()
     scope.open!(target)
-  }}>{children}</a>
+  }}><Icon size={14} aria-hidden="true" /><span className="local-file-label">{children}</span><span className="local-file-kind" aria-hidden="true">{folder ? '目录' : extension?.toUpperCase() || '本地'}{target.line ? ` · L${target.line}` : ''}</span></a>
 }

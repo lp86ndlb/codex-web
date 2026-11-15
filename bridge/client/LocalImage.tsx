@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useRef, useState } from 'react'
-import { ExternalLink, ImageIcon, LoaderCircle, RefreshCw } from 'lucide-react'
+import { ExternalLink, ImageIcon, LoaderCircle, Maximize2, RefreshCw } from 'lucide-react'
 import { resolveChatLink } from '../shared/chat-links.ts'
 import { api, message } from './api.ts'
 import { FileLinks } from './FileLinks.tsx'
@@ -12,7 +12,7 @@ export function imageContentUrl(workspace: string, path: string, version: string
 }
 
 /** Read the current workspace image once, then again when the answer settles or the user refreshes. */
-export const LocalImage = memo(function LocalImage({ path, alt = '', streaming = false }: { path: string; alt?: string; streaming?: boolean }) {
+export const LocalImage = memo(function LocalImage({ path, alt = '', streaming = false, presentation = 'image' }: { path: string; alt?: string; streaming?: boolean; presentation?: 'image' | 'card' }) {
   const scope = useContext(FileLinks)
   const resolved = resolveChatLink(path, { root: scope.root, cwd: scope.cwd, origin: window.location.origin })
   const localPath = resolved.kind === 'file' ? resolved.path : ''
@@ -42,6 +42,16 @@ export const LocalImage = memo(function LocalImage({ path, alt = '', streaming =
     return () => { cancelled = true; controller.abort() }
   }, [scope.workspaceId, scope.threadId, localPath, streaming, refresh, visible])
   const label = alt || info?.path.split('/').at(-1) || localPath.split('/').at(-1) || '本地图片'
+  if (presentation === 'card') return <span ref={container} className="local-image local-image-file-card" data-local-image={localPath || undefined} aria-busy={loading && visible}>
+    <a className="local-image-card-link" href={path} aria-label={label} title={`预览图片：${localPath}`} onClick={event => { event.preventDefault(); if (localPath) scope.open?.({ path: localPath }) }}>
+      <span className="local-image-card-thumb" aria-hidden="true">{info && scope.workspaceId && !error
+        ? <img src={imageContentUrl(scope.workspaceId, localPath, info.version, revision, scope.threadId)} alt="" loading="lazy" decoding="async" onError={() => setError('图片读取失败，可刷新后重试')} />
+        : loading && visible ? <LoaderCircle size={20} className="spin" /> : <ImageIcon size={22} />}</span>
+      <span className="local-image-card-description"><strong>{label}</strong><span>{localPath.split('/').at(-1) || '本地图片'} · 图片</span>{error && <span className="local-image-card-error" role="status">{error}</span>}</span>
+      <Maximize2 size={15} aria-hidden="true" />
+    </a>
+    {error && <button type="button" className="local-image-card-retry" aria-label={`刷新图片：${label}`} disabled={loading} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={13} />重试</button>}
+  </span>
   return <span ref={container} className="local-image" data-size={scope.imageSize} data-local-image={localPath || undefined} aria-busy={loading}>
     {info && scope.workspaceId && !error ? <button type="button" className="local-image-stage" aria-label={`预览图片：${label}`} title="点击放大预览" disabled={!scope.open} onClick={() => scope.open?.({ path: localPath })}><img key={revision} src={imageContentUrl(scope.workspaceId, localPath, info.version, revision, scope.threadId)} alt={alt || label} loading="lazy" decoding="async" onError={() => setError('图片读取失败，可刷新后重试')} /></button>
       : <span className="local-image-placeholder" role={error ? 'alert' : 'status'}>{loading ? <LoaderCircle size={22} className="spin" /> : <ImageIcon size={24} />}<span>{error || '读取图片…'}</span></span>}
