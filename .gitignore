@@ -11,10 +11,14 @@ node_modules/
 /bridge/coverage/
 /coverage/
 *.tsbuildinfo
+__pycache__/
+*.pyc
 
 # Workspace-local tools, temporary builds and source/data backups.
 /.cache/
 /.local-tools/
+/.runtime/
+/.migration/
 /backups/
 /upstream/
 /tmp/

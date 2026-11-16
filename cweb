@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 CWEB_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$CWEB_ROOT/.migration/manifest.json" ]]; then
+  exec bash "$CWEB_ROOT/scripts/migration/run.sh" "$@"
+fi
 exec node "$CWEB_ROOT/scripts/cweb.mjs" "$@"

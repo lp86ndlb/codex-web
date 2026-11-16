@@ -3,6 +3,7 @@
 | 想做什么 | 从这里开始 |
 | --- | --- |
 | 在 Ubuntu 安装、启动或迁移 | [部署与迁移](ubuntu-deployment.md) |
+| 用 ZIP 搬迁程序、附件和原生会话 | [私人迁移包](migration-package.md) |
 | 给 Codex CLI 一段部署指令 | [协助部署](ubuntu-deployment.md#让-codex-cli-协助部署) |
 | 使用工作区、输入、待办与快捷键 | [使用指南](usage.md) |
 | 了解前后端、协议和数据目录 | [架构与目录](architecture.md) |
