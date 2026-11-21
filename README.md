@@ -23,15 +23,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-65748B?style=flat-square" alt="MIT 许可证"></a>
 </p>
 
-![cweb 工作台，左侧是项目会话，中间是发布协调对话，右侧是待办与验收](docs/assets/readme/workbench.webp)
+[![cweb 工作台，左侧是项目会话，中间是发布协调对话，右侧是待办与验收](docs/assets/readme/workbench.webp)](docs/assets/readme/workbench.webp?raw=1)
 
-<sub>截图来自 cweb 本身。演示项目「星图文档站」及其中的会话均为虚构。</sub>
+<sub>截图来自 cweb 本身。演示项目「星图文档站」及其中的会话均为虚构。点击截图可查看原图。</sub>
 
 ## 团队分工
 
 准备给文档站发新版时，可以让主管把「核对接口示例」和「试走入门指南」交给两个会话。两个专项各自推进，主管收齐结果后再整理发布清单。每个成员都保留原来的会话，你随时可以点进去查看过程或直接交代工作。
 
-![团队关系图展示负责人、项目主管和四个专项会话，两条虚线标出了等待批准的任务](docs/assets/readme/team.webp)
+[![团队关系图展示负责人、项目主管和四个专项会话，两条虚线标出了等待批准的任务](docs/assets/readme/team.webp)](docs/assets/readme/team.webp?raw=1)
 
 - **让关系图说明谁负责什么。** 拖动画布查看各组，沿箭头看哪些会话能通信，双击节点回到原对话。
 - **把能同时开工的事一次派出去。** 在右侧「审批」勾选独立任务并批准，不同接收会话可以并行。同一个会话收到多条任务时，按队列处理。
@@ -43,7 +43,7 @@
 
 每个会话都有自己的待办。Codex 可以记录手头工作、接下来做什么，以及交付结果。隔天回来，先看右侧的「现在」和「下一步」，就能接着做。
 
-![待办与验收和批量批准并排展示，左侧有交付说明和阶段进度，右侧勾选了两个不同会话的任务](docs/assets/readme/task-panels.webp)
+[![待办与验收和批量批准并排展示，左侧有交付说明和阶段进度，右侧勾选了两个不同会话的任务](docs/assets/readme/task-panels.webp)](docs/assets/readme/task-panels.webp?raw=1)
 
 | 我想做什么 | 在哪里处理 |
 | --- | --- |

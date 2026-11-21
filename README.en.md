@@ -23,9 +23,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-65748B?style=flat-square" alt="MIT license"></a>
 </p>
 
-![The cweb workspace with a project and its sessions on the left, a conversation in the center, and a task list on the right](docs/assets/readme/workbench.webp)
+[![The cweb workspace with a project and its sessions on the left, a conversation in the center, and a task list on the right](docs/assets/readme/workbench.webp)](docs/assets/readme/workbench.webp?raw=1)
 
-<sub>All screenshots show the actual cweb interface with a fictional docs project. The current interface uses Chinese labels, included below alongside their English meanings.</sub>
+<sub>All screenshots show the actual cweb interface with a fictional docs project. Click a screenshot to see it at full size. The current interface uses Chinese labels, included below alongside their English meanings.</sub>
 
 ## Quick start
 
@@ -52,7 +52,7 @@ cweb runs in the background. To update a Git installation, pull the new code, ru
 
 If you are getting a documentation site ready to ship, one session can check API examples while another walks through the getting-started guide. A coordinator can follow both and pull their findings together. Every member stays available as an ordinary chat.
 
-![Team graph showing a project lead, a coordinator, and four specialist sessions. Two dashed connections show work awaiting approval.](docs/assets/readme/team.webp)
+[![Team graph showing a project lead, a coordinator, and four specialist sessions. Two dashed connections show work awaiting approval.](docs/assets/readme/team.webp)](docs/assets/readme/team.webp?raw=1)
 
 1. Right-click a workspace and enable **Team Mode** (「团队模式」).
 2. Open the graph and use **Add Session** (「加入会话」) to give existing sessions roles and groups. The arrows show who can send work to whom. Double-click a node to open its chat.
@@ -64,7 +64,7 @@ Different recipient sessions can work in parallel. Multiple tasks for one sessio
 
 Each chat has its own **Tasks** (「待办」) tab. It shows what is being worked on, what comes next, and which items need your confirmation. The tab count includes both active items and items waiting for review.
 
-![Side-by-side panels showing work ready for final review and two team tasks selected for approval](docs/assets/readme/task-panels.webp)
+[![Side-by-side panels showing work ready for final review and two team tasks selected for approval](docs/assets/readme/task-panels.webp)](docs/assets/readme/task-panels.webp?raw=1)
 
 Team approvals decide whether a task may be sent. The task list is where you review the work after it is submitted. You can read the handoff, accept it or send it back, reorder items, and set aside work you are not ready to pick up.
 
