@@ -4,13 +4,14 @@ import { pendingChoiceMessage } from '../shared/choices.ts'
 /** Background badges and notices never need tool output, diffs or old runs. */
 export function observeActivity(previous: Record<string, ActivityView>, value: ThreadView | ThreadPatch): Record<string, ActivityView> {
   const old = previous[value.id]
-  if (old && old.revision >= value.revision) return previous
+  if (old && (old.revision > value.revision || old.revision === value.revision && 'changes' in value)) return previous
   const change = 'changes' in value ? value.changes : value
   const runs = change.runs === undefined ? old?.runs : change.runs?.slice(-1)
   const choicePending = change.choicePending ?? old?.choicePending
   const next: ActivityView = {
     id: value.id, revision: value.revision, title: change.title ?? old?.title ?? '', cwd: change.cwd ?? old?.cwd ?? '',
-    status: change.status ?? old?.status ?? 'idle', updatedAt: change.updatedAt ?? old?.updatedAt ?? 0,
+    status: change.status ?? old?.status, updatedAt: change.updatedAt ?? old?.updatedAt ?? 0,
+    statusUpdatedAt: change.status === undefined ? old?.statusUpdatedAt : change.updatedAt ?? old?.updatedAt ?? 0,
     turnId: change.turnId === undefined ? old?.turnId ?? null : change.turnId,
     choicePending, externalOwner: change.externalOwner === undefined ? old?.externalOwner : change.externalOwner,
     compacting: change.compacting === undefined ? old?.compacting : Boolean(change.compacting),

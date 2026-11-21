@@ -7,16 +7,18 @@ import type { Bridge } from './bridge.ts'
 import type { StreamEvent } from '../shared/types.ts'
 import { BridgeError, errorMessage } from './errors.ts'
 import { browseDirectories } from './directories.ts'
-import { preferencesSchema, sessionOptionsSchema } from './preferences.ts'
+import { preferencesSchema, serviceTierSelectionSchema, sessionOptionsSchema } from './preferences.ts'
 import { attachmentLimit } from './attachments.ts'
 import { projectThread } from './projection.ts'
 import { record } from './errors.ts'
 import { openLocalPath } from './desktop.ts'
 import { imageAccess } from './image-access.ts'
+import { teamDecisionSchema } from './team.ts'
 
 const messageSchema = z.object({
   text: z.string().trim().max(100_000), model: z.string().max(200).optional(),
   effort: z.string().trim().max(64).optional(),
+  serviceTier: serviceTierSelectionSchema.optional(),
   collaborationMode: z.enum(['default', 'plan']).optional(),
   clientMessageId: z.string().uuid().optional(),
   mode: z.enum(['workspace-write', 'read-only', 'danger-full-access']), steer: z.boolean().optional(),
@@ -97,9 +99,14 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
     if (path === '/api/bootstrap' && req.method === 'GET') {
       res.setHeader('Set-Cookie', `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/`)
       try { json(res, { ...await bridge.bootstrap(), token }) }
-      catch (error) { json(res, { capabilities: { diagnostics: true, durableMessages: true }, ...await bridge.preferences.snapshot(), queue: bridge.queue(), token, root: bridge.catalog.list()[0]?.path || '', workspaces: bridge.catalog.list(), plugins: { todoNote: bridge.plugin.enabled }, codexHome: bridge.codexHome,
+      catch (error) { json(res, { capabilities: { teamMode: Boolean(bridge.workspaceTeams), teamPilot: Boolean(bridge.team), diagnostics: true, durableMessages: true }, ...await bridge.preferences.snapshot(), queue: bridge.queue(), token, root: bridge.catalog.list()[0]?.path || '', workspaces: bridge.catalog.list(), plugins: { todoNote: bridge.plugin.enabled }, codexHome: bridge.codexHome,
         runtime: { state: 'failed', error: errorMessage(error) }, models: [], account: '未连接', threads: bridge.list() }) }
       return
+    }
+    if (path === '/api/team/tool' && req.method === 'POST') {
+      if (req.headers.origin) throw new BridgeError('TEAM_TOKEN', '团队工具身份无效', 403)
+      const input = z.object({ name: z.string().max(100), arguments: z.unknown() }).strict().parse(await body(req))
+      json(res, { text: await bridge.teamAgentTool(String(req.headers['x-cweb-team-token'] || ''), input.name, input.arguments, url.searchParams.get('workspace') || undefined) }); return
     }
     if (!path.startsWith('/api/')) { await serve(req, res, path); return }
     const cookie = req.headers.cookie?.split(';').map(value => value.trim()).find(value => value.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1)
@@ -118,6 +125,38 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
       const target = await access.workspace.localOpenTarget(access.path)
       await openFile(input.containingFolder && !(await stat(target)).isDirectory() ? dirname(target) : target)
       json(res, { ok: true }); return
+    }
+    if (path === '/api/teams' && req.method === 'GET') {
+      if (!bridge.workspaceTeams) throw new BridgeError('TEAM_DISABLED', '此服务尚未启用工作区团队', 404)
+      json(res, await bridge.workspaceTeams.index()); return
+    }
+    if (path === '/api/team' || path.startsWith('/api/team/')) {
+      const workspaceId = url.searchParams.get('workspace') || undefined
+      const team = await bridge.teamForWorkspace(workspaceId)
+      if (path === '/api/team' && req.method === 'GET') {
+        const state = await team.snapshot()
+        json(res, { ...state, capabilities: { memberRemoval: true, batchDelivery: true, batchApproval: true }, workspaceId: workspaceId || bridge.catalog.list()[0]?.id, pilot: Boolean(bridge.team), running: state.members.filter(member => bridge.threads.get(member.threadId)?.turnId).map(member => member.threadId) }); return
+      }
+      if (path === '/api/team/candidates' && req.method === 'GET') { json(res, await bridge.teamCandidates(workspaceId || bridge.catalog.list()[0]!.id)); return }
+      if (path === '/api/team/members/import' && req.method === 'POST') { json(res, await bridge.importTeamMember(workspaceId || bridge.catalog.list()[0]!.id, await body(req))); return }
+      if (path === '/api/team/members/remove' && req.method === 'POST') { json(res, await team.removeMember(await body(req))); return }
+      if (path === '/api/team/queue/batch' && req.method === 'POST') { json(res, await team.requestBatch(await body(req))); return }
+      if (path === '/api/team/tasks/approve' && req.method === 'POST') { json(res, await team.approveTasks(await body(req))); return }
+      if (path === '/api/team/topology' && req.method === 'POST') { json(res, await team.topology(await body(req))); return }
+      if (path === '/api/team/policy' && req.method === 'POST') { json(res, await team.setPolicy(await body(req))); return }
+      if (path === '/api/team/members' && req.method === 'POST') { json(res, await team.requestMember('user', await body(req))); return }
+      const memberRequest = /^\/api\/team\/members\/([^/]+)\/decision$/.exec(path)
+      if (memberRequest && req.method === 'POST') { json(res, await team.decideMember(z.string().uuid().parse(memberRequest[1]), await body(req))); return }
+      if (path === '/api/team/enabled' && req.method === 'POST') { const input = z.object({ enabled: z.boolean() }).strict().parse(await body(req)); json(res, await team.enable(input.enabled)); return }
+      if (path === '/api/team/start' && req.method === 'POST') { const input = z.object({ clientMessageId: z.string().uuid() }).strict().parse(await body(req)); json(res, await bridge.startTeamPilot(input.clientMessageId)); return }
+      const request = /^\/api\/team\/messages\/([^/]+)\/(decision|reconcile)$/.exec(path)
+      if (request && req.method === 'POST') {
+        const id = z.string().uuid().parse(request[1])
+        if (request[2] === 'decision') json(res, await team.decide(id, teamDecisionSchema.parse(await body(req))))
+        else { z.object({}).strict().parse(await body(req)); json(res, await team.reconcile(id)) }
+        return
+      }
+      throw new BridgeError('TEAM_ROUTE', '团队试验不提供该操作', 404)
     }
     const threadMatch = /^\/api\/threads\/([^/]+)(?:\/(message|edit|interrupt|rename|archive|restore|compact|queue|options|release|handoff|todo-connect|todo-link|snapshot|goal))?$/.exec(path)
     const deliveryMatch = /^\/api\/threads\/([^/]+)\/delivery\/([^/]+)$/.exec(path)
@@ -208,6 +247,7 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
       send({ type: 'preferences', ...preferences })
       send({ type: 'queue', queue: bridge.queue() })
       send({ type: 'approvals', approvals: bridge.approvals() })
+      if (bridge.team) send({ type: 'teamChanged', revision: (await bridge.team.snapshot()).revision })
       const requested = url.searchParams.get('thread')
       if (requested && bridge.threads.has(requested)) send({ type: 'thread', thread: await bridge.open(requested) })
       return
@@ -220,6 +260,7 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
     }
     if (path === '/api/workspaces' && req.method === 'POST') {
       const input = z.object({ path: z.string().min(1).max(4096), name: z.string().trim().min(1).max(80).optional() }).strict().parse(await body(req))
+      if (bridge.team && resolve(input.path) !== bridge.catalog.list()[0]?.path) throw new BridgeError('TEAM_ISOLATION', '试验实例只使用专用工作区，不接入实际项目', 403)
       json(res, await bridge.addWorkspace(input.path, input.name), 201); return
     }
     const workspaceMatch = /^\/api\/workspaces\/([^/]+)\/rename$/.exec(path)
@@ -269,7 +310,7 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
         else if (action === 'queue') await bridge.enqueue(id, messageSchema.parse(await body(req)))
         else if (action === 'restore') await bridge.restore(id)
         else if (action === 'compact') await bridge.compact(id)
-        else if (action === 'release') await bridge.release(id)
+        else if (action === 'release') { json(res, { ok: true, command: await bridge.releaseToTerminal(id) }); return }
         else if (action === 'handoff') { json(res, await bridge.handoff(id)); return }
         else if (action === 'todo-connect') { json(res, await bridge.connectTodo(id)); return }
         else if (action === 'todo-link') { await bridge.requestTodoLink(id, messageSchema.parse(await body(req))); json(res, { ok: true }); return }

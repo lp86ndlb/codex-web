@@ -110,6 +110,34 @@ test('pending approval evidence and answered choices, high context, quota, permi
  } finally { await f.close(); t.mock.timers.reset() }
 })
 
+test('content restrictions preserve native errors and never schedule or submit a rewritten retry, before or after tools', async t => {
+ const f = await fixture(); t.mock.timers.enable({ apis: ['setTimeout'] })
+ try {
+  for (const completedSteps of [0, 43]) {
+   const a = await f.bridge.create(f.cwd)
+   const input = '检查 ROS2 Packet 解码记录，保留日志与项目事实。'
+   await f.bridge.message(a.id, { text: input, mode: 'read-only' })
+   const native = f.rpc.native.get(a.id)!, turn = native.turns.at(-1)!
+   for (let i = 0; i < completedSteps; i++) {
+    const item = { id: `synthetic-${i}`, type: 'commandExecution', status: 'completed', command: 'fixture-only', aggregatedOutput: 'fixture', exitCode: 0 }
+    turn.items.push(item); f.rpc.notify('item/completed', { threadId: a.id, turnId: turn.id, item })
+   }
+   const original = 'Stream disconnected before completion: Your request was flagged for possible cybersecurity risk.'
+   f.rpc.fail(a.id, original)
+   await until(() => f.bridge.threads.get(a.id)?.recovery?.state === 'manual')
+   const view = f.bridge.threads.get(a.id)!
+   assert.equal(view.error, original)
+   assert.match(view.recovery!.message, /内容安全拦截/)
+   assert.match(view.recovery!.message, /无法确定触发内容/)
+   t.mock.timers.tick(12_000); await Promise.resolve()
+   assert.equal(starts(f, a.id).length, 1)
+   assert.equal((starts(f, a.id)[0].params.input as { text: string }[])[0].text, input)
+   assert.equal(native.turns.length, 1)
+   assert.equal(view.items.filter(item => item.type === 'commandExecution').length, completedSteps)
+  }
+ } finally { await f.close(); t.mock.timers.reset() }
+})
+
 test('new input, disabling recovery, disconnect, user stop and dispose cancel a scheduled replay', async t => {
  const f = await fixture(); t.mock.timers.enable({ apis: ['setTimeout'] })
  try {

@@ -23,6 +23,7 @@ await writeFile(store, JSON.stringify({ [id]: { id, name: '本地图片验证', 
 const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: store } })
 const bridge = new Bridge(rpc, new Workspace(cwd), resolve(root, 'home'), resolve(root, 'data'))
 await bridge.plugin.setEnabled(false)
+await bridge.updatePreferences({ showInspector: false })
 const app = createHttpServer({ bridge, dist: resolve(process.env.CWEB_TEST_DIST || 'dist') })
 await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${app.server.address().port}`

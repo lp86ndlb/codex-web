@@ -107,7 +107,7 @@ button.leading {
 
 .title {
   flex: none;
-  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-size: var(--dsh-content-font-size-secondary, max(var(--ui-min-font, 10px), 0.9286rem));
   line-height: calc(24px + var(--dsh-content-font-delta, 0px));
   color: inherit;
 }

@@ -5,35 +5,35 @@
 .file-preview-header { display: flex; gap: 12px; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .file-preview-header > svg { color: var(--muted); flex-shrink: 0; }
 .file-preview-header > div:not(.file-preview-actions) { display: grid; gap: 3px; min-width: 0; }
-.file-preview-header strong { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-preview-header small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-preview-header strong { font-size: 1.0714rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-preview-header small { color: var(--muted); font-size: max(var(--ui-min-font, 10px), 0.8571rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-preview-actions { display: flex; align-items: center; gap: 5px; margin-left: auto; flex-shrink: 0; }
-.file-preview-location { display: flex; align-items: center; gap: 8px; padding: 5px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.file-preview-location { display: flex; align-items: center; gap: 8px; padding: 5px 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: max(var(--ui-min-font, 10px), 0.7857rem); }
 .file-preview-location > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.file-preview-location button { flex-shrink: 0; gap: 4px; font-size: 11px; }
+.file-preview-location button { flex-shrink: 0; gap: 4px; font-size: max(var(--ui-min-font, 10px), 0.7857rem); }
 .file-preview-launchers { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
-.file-preview-folder { gap: 6px; font-size: 12px; padding: 7px; }
+.file-preview-folder { gap: 6px; font-size: max(var(--ui-min-font, 10px), 0.8571rem); padding: 7px; }
 .file-preview-dialog[data-layout=side] { margin: 0; inset: 12px 12px 12px auto; width: min(720px, calc(100vw - 24px)); height: calc(100dvh - 24px); }
-.file-preview-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 6px 9px; }
+.file-preview-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: max(var(--ui-min-font, 10px), 0.8571rem); padding: 6px 9px; }
 .file-preview-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .file-preview-document { padding: 24px clamp(20px, 5vw, 48px) 40px; }
-.file-preview-document .markdown { font-size: 15px; }
+.file-preview-document .markdown { font-size: 1.0714rem; }
 .file-preview-document [id] { scroll-margin-top: 20px; }
 .file-preview-document img { max-width: 100%; }
-.file-preview-source { display: block; width: 100%; height: 100%; min-height: 100%; resize: none; border: 0; border-radius: 0; padding: 22px 26px; background: transparent; font: 13px/22px var(--mono, monospace); white-space: pre; overflow: auto; tab-size: 2; }
+.file-preview-source { display: block; width: 100%; height: 100%; min-height: 100%; resize: none; border: 0; border-radius: 0; padding: 22px 26px; background: transparent; font: max(var(--ui-min-font, 10px), 0.9286rem)/1.5714rem var(--mono, monospace); white-space: pre; overflow: auto; tab-size: 2; }
 .file-preview-source:focus { outline: none; box-shadow: none; }
 .file-preview-state { min-height: 250px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; padding: 28px; text-align: center; color: var(--muted); }
 .file-preview-state p { margin: 0; }
-.file-preview-state code { overflow-wrap: anywhere; font-size: 12px; max-width: 100%; }
+.file-preview-state code { overflow-wrap: anywhere; font-size: max(var(--ui-min-font, 10px), 0.8571rem); max-width: 100%; }
 .file-preview-directory { display: grid; gap: 3px; padding: 14px; }
 .file-preview-directory > button { width: 100%; display: flex; align-items: center; gap: 12px; text-align: left; padding: 11px 12px; background: transparent; border-color: transparent; }
 .file-preview-directory > button:hover { background: var(--hover); }
-.file-preview-directory > button > span:last-child:not(:nth-child(2)) { margin-left: auto; font-size: 12px; }
-.file-preview-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.file-preview-directory > button > span:last-child:not(:nth-child(2)) { margin-left: auto; font-size: max(var(--ui-min-font, 10px), 0.8571rem); }
+.file-preview-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: max(var(--ui-min-font, 10px), 0.7857rem); }
 .file-preview-info { display: grid; gap: 3px; min-width: 0; line-height: 1.5; }
 .file-preview-feedback { min-height: 16px; overflow-wrap: anywhere; }
 .file-preview-feedback[data-error] { color: var(--danger); }
-.file-preview-open { flex-shrink: 0; gap: 7px; padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--ink-secondary); font-size: 12px; transition: background .18s var(--motion-ease), border-color .18s var(--motion-ease), transform .18s var(--motion-ease); }
+.file-preview-open { flex-shrink: 0; gap: 7px; padding: 8px 11px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--ink-secondary); font-size: max(var(--ui-min-font, 10px), 0.8571rem); transition: background .18s var(--motion-ease), border-color .18s var(--motion-ease), transform .18s var(--motion-ease); }
 .file-preview-open:hover:not(:disabled) { background: var(--hover); border-color: var(--accent-border); }
 .file-preview-open:active:not(:disabled) { transform: scale(.98); }
 @media (max-width: 600px) { .file-preview-dialog { width: calc(100vw - 16px); height: calc(100dvh - 24px); } .file-preview-header { padding: 13px 12px; gap: 8px; } .file-preview-header > svg { display: none; } .file-preview-actions { gap: 1px; } .file-preview-footer { padding: 9px 12px; } }

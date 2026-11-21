@@ -7,6 +7,7 @@ import { applyAction, emptyNote, isLinked, normalizeNote, readText, renderLiveSe
 import { GUIDE } from '../plugins/todo-note/guide.js'
 import { JsonStore } from './storage.ts'
 import { BridgeError } from './errors.ts'
+import { todoCount, type TodoCount } from '../shared/todo-count.ts'
 
 type Note = ReturnType<typeof emptyNote>
 const text = z.string().max(500)
@@ -42,8 +43,10 @@ export class TodoNotePlugin {
   private notes = new Map<string, JsonStore<{ note: Note }>>()
   enabled = true
   private directory: string
-  constructor(directory: string) {
+  private onCountChange?: (count: TodoCount) => void
+  constructor(directory: string, onCountChange?: (count: TodoCount) => void) {
     this.directory = directory
+    this.onCountChange = onCountChange
     this.settings = new JsonStore(resolve(directory, 'plugin.json'), { enabled: true, linkedThreads: [] }, value =>
       z.object({ enabled: z.boolean(), linkedThreads: z.array(z.string()).default([]) }).parse(value))
   }
@@ -68,10 +71,14 @@ export class TodoNotePlugin {
   async linked(id: string) { return isLinked(await this.get(id)) }
   async act(id: string, actions: object[]) {
     if (!this.enabled) throw new BridgeError('PLUGIN_DISABLED', '待办便签插件已停用', 409)
-    return this.store(id).update(data => {
+    const result = await this.store(id).update(data => {
+      const before = todoCount(id, data.note).count
       for (const action of actions) data.note = applyAction(data.note, action).note
-      return data.note
+      const count = todoCount(id, data.note)
+      return { note: data.note, changed: count.count !== before ? count : undefined }
     })
+    if (result.changed) this.onCountChange?.(result.changed)
+    return result.note
   }
   async context(id: string, mcpServer?: string) {
     const { instructions, snapshot } = await this.contextParts(id, mcpServer)

@@ -150,6 +150,7 @@ def restore(root, use_target_login=True):
             safe_extract(archive, work)
         print('快照已解开，正在同步会话路径和分页索引。', flush=True)
         mappings = [(manifest['sourceRoot'], str(root)), (manifest['sourceCodexHome'], str(codex_target)), (manifest['sourceNodeRoot'], str(root / '.runtime')), (manifest['sourceHome'], str(Path.home()))]
+        mappings.extend((alias, str(codex_target)) for alias in manifest.get('sourceCodexAliases', []))
         paths = Paths(mappings)
         # Used only for lookup, never included in the replacement regular expression.
         paths.mapping['@codex-target'] = str(codex_target)

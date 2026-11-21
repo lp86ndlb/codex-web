@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
-import type { Approval, ApprovalPolicy, Bootstrap, Mode, StreamEvent, ThreadSummary, ThreadView, Preferences, SkillInfo, QueuedMessage, ThreadGoal } from '../shared/types.ts'
+import { withModelDefaults } from '../shared/session-options.ts'
+import type { Approval, ApprovalPolicy, Bootstrap, Mode, StreamEvent, ThreadSummary, ThreadView, Preferences, SkillInfo, QueuedMessage, ThreadGoal, ModelOption, ServiceTierSelection } from '../shared/types.ts'
 import { CodexRpc } from './rpc.ts'
 import { Workspace } from './workspace.ts'
 import { WorkspaceCatalog } from './catalog.ts'
@@ -22,6 +23,11 @@ import { ConnectionDiagnostics } from './diagnostics.ts'
 import { SubmissionJournal } from './submissions.ts'
 import { parseElicitation, validateElicitation } from '../shared/elicitation.ts'
 import { AccountUsage } from './account-usage.ts'
+import { TeamService, teamTools, type TeamAdapter } from './team.ts'
+import { WorkspaceTeams } from './workspace-teams.ts'
+import { z } from 'zod'
+import { teamRoute } from '../shared/team-topology.ts'
+import { teamOutstanding } from '../shared/team.ts'
 
 interface PendingRequest { wireId: string | number; approval: Approval; params: Record<string, unknown> }
 interface RecoverySource { input?: MessageInput; sourceTurnId: string; retryTurnId?: string; attempt: number; failure: string; blocked?: boolean; starting?: boolean; timer?: ReturnType<typeof setTimeout> }
@@ -29,7 +35,7 @@ interface CompactOperation { previousTurns: Set<string>; turnId?: string; submit
 interface HistoryWindow { cursor?: string; nativeCursor?: string; legacy?: unknown[]; legacyBefore?: number; consumed: Set<string>; expanded?: boolean; boundary?: string }
 const HISTORY_PAGE_TURNS = 8
 const HISTORY_INITIAL_TURNS = 2
-export interface MessageInput { text: string; model?: string; effort?: string; mode: Mode; approvalPolicy?: ApprovalPolicy; collaborationMode?: 'default' | 'plan'; steer?: boolean; attachments?: string[]; skills?: string[]; clientMessageId?: string }
+export interface MessageInput { text: string; model?: string; effort?: string; serviceTier?: ServiceTierSelection; mode: Mode; approvalPolicy?: ApprovalPolicy; collaborationMode?: 'default' | 'plan'; steer?: boolean; attachments?: string[]; skills?: string[]; clientMessageId?: string; transientOptions?: boolean }
 
 /** Native Codex owns history; this instance owns only live UI projections and unresolved prompts. */
 export class Bridge extends EventEmitter {
@@ -42,6 +48,12 @@ export class Bridge extends EventEmitter {
   metrics: RunHistory
   diagnostics: ConnectionDiagnostics
   submissions: SubmissionJournal
+  readonly team?: TeamService
+  readonly workspaceTeams?: WorkspaceTeams
+  private nativeTeamThreads = new Set<string>()
+  private teamMcpThreads = new Set<string>()
+  private teamLinks = new Map<string, Promise<boolean>>()
+  private teamSetup?: Promise<void>
   private accountUsage: AccountUsage
   codexHome: string
   readonly dataDirectory: string
@@ -95,10 +107,11 @@ export class Bridge extends EventEmitter {
   private observedContexts = new Set<string>()
   private compactions = new Map<string, CompactOperation>()
 
-  constructor(rpc: CodexRpc, workspace: Workspace | WorkspaceCatalog, codexHome: string, dataDirectory = dirname(codexHome), sharedHistory = false) {
+  constructor(rpc: CodexRpc, workspace: Workspace | WorkspaceCatalog, codexHome: string, dataDirectory = dirname(codexHome), sharedHistory = false, features: { teamPilot?: boolean; workspaceTeams?: boolean } = {}) {
     super(); this.rpc = rpc; this.codexHome = codexHome; this.dataDirectory = dataDirectory; this.sharedHistory = sharedHistory
+    if (features.teamPilot && sharedHistory) throw new BridgeError('TEAM_ISOLATION', '团队试验只允许独立的原生会话库', 403)
     this.catalog = workspace instanceof Workspace ? new WorkspaceCatalog(resolve(dataDirectory, 'workspaces.json'), workspace) : workspace
-    this.plugin = new TodoNotePlugin(resolve(dataDirectory, 'plugins/todo-note'))
+    this.plugin = new TodoNotePlugin(resolve(dataDirectory, 'plugins/todo-note'), count => this.publish({ type: 'todoCount', ...count }))
     this.todoMcpName = `cweb_note_${createHash('sha256').update(resolve(dataDirectory)).digest('hex').slice(0, 10)}`
     this.preferences = new PreferencesStore(resolve(dataDirectory, 'preferences.json'))
     this.attachments = new AttachmentStore(resolve(dataDirectory, 'attachments'))
@@ -108,9 +121,24 @@ export class Bridge extends EventEmitter {
     this.submissions = new SubmissionJournal(resolve(dataDirectory, 'submission-receipts.json'))
     this.accountUsage = new AccountUsage(rpc)
     this.sessionContexts = new SessionContextStore(resolve(dataDirectory, 'session-context.json'))
+    if (features.teamPilot) this.team = new TeamService(resolve(dataDirectory, 'team-pilot.json'), this.teamAdapter())
+    else if (features.workspaceTeams) this.workspaceTeams = new WorkspaceTeams(resolve(dataDirectory, 'teams'), this.catalog, id => this.teamAdapter(id))
     rpc.on('notification', message => this.notification(record(message)))
     rpc.on('request', message => this.request(record(message)))
     rpc.on('status', runtime => this.publish({ type: 'runtime', runtime }))
+    rpc.on('sourcesChanged', () => { if (!this.disposed) void this.refreshList(true).catch(() => {}) })
+    rpc.on('sourceDisconnected', ({ ids }: { ids: string[] }) => {
+      if (this.disposed) return
+      for (const id of ids) {
+        this.teamMcpThreads.delete(id)
+        this.loaded.delete(id); this.fresh.delete(id); this.ownedTurns.delete(id); this.readAt.delete(id)
+        const thread = this.threads.get(id)
+        if (thread) this.changed({ ...thread, turnId: null, status: thread.status === 'inProgress' ? 'interrupted' : thread.status,
+          error: '该会话所在的 CLI 连接中断，执行结果待核对；其他会话仍可使用。' })
+      }
+      for (const [key, pending] of this.pending) if (ids.includes(pending.approval.threadId)) this.pending.delete(key)
+      this.publish({ type: 'approvals', approvals: this.approvals() })
+    })
     rpc.on('disconnected', () => {
       for (const id of this.compactions.keys()) this.finishCompact(id, false)
       for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)
@@ -123,7 +151,7 @@ export class Bridge extends EventEmitter {
       this.listEpoch++
       if (this.legacyScanTimer) clearTimeout(this.legacyScanTimer)
       this.legacyScanTimer = undefined
-      this.loaded.clear(); this.pending.clear(); this.ownedTurns.clear(); this.fresh.clear(); this.sent.clear(); this.reading.clear(); this.readAt.clear(); this.todoMcpThreads.clear(); this.todoLinksActive.clear(); this.listReadAt = 0
+      this.loaded.clear(); this.pending.clear(); this.ownedTurns.clear(); this.fresh.clear(); this.sent.clear(); this.reading.clear(); this.readAt.clear(); this.todoMcpThreads.clear(); this.teamMcpThreads.clear(); this.todoLinksActive.clear(); this.listReadAt = 0
       this.publish({ type: 'approvals', approvals: [] })
       for (const thread of this.threads.values()) {
         if (thread.status === 'inProgress') {
@@ -136,10 +164,135 @@ export class Bridge extends EventEmitter {
   }
 
   private publish(event: StreamEvent) { this.emit('event', event) }
-  setHttpPort(port: number) { this.httpOrigin = `http://127.0.0.1:${port}` }
+  private get teamMcpName() { return `cweb_team_${createHash('sha256').update(`${resolve(this.dataDirectory)}:${this.httpOrigin}`).digest('hex').slice(0, 10)}` }
+  setHttpPort(port: number) { this.httpOrigin = `http://127.0.0.1:${port}`; this.teamMcpThreads.clear() }
   get workspace() { return this.catalog.get(this.catalog.list()[0]?.id || '') }
-  get active() { return this.compactions.size > 0 || this.queued.length > 0 || this.creating > 0 || this.submitting.size > 0 || this.opening.size > 0 || [...this.threads.values()].some(thread => thread.turnId) }
-  async initialize() { await this.catalog.initialize(); await this.plugin.initialize() }
+  get active() { return this.compactions.size > 0 || this.queued.length > 0 || this.creating > 0 || this.submitting.size > 0 || this.opening.size > 0 || [...this.threads.values()].some(thread => thread.turnId && !thread.externalOwner) }
+  private source(id: string) { return this.rpc.forThread?.(id) || this.rpc }
+  async initialize() { await this.catalog.initialize(); await this.plugin.initialize(); await this.team?.initialize(); await this.workspaceTeams?.initialize() }
+  private teamAdapter(workspaceId?: string): TeamAdapter {
+    return {
+      changed: revision => this.publish({ type: 'teamChanged', revision, ...(workspaceId ? { workspaceId } : {}) }),
+      available: async member => {
+        if (this.disposed) return '团队服务正在关闭'
+        const thread = await this.open(member.threadId)
+        if (resolve(thread.cwd) !== resolve(member.cwd) || workspaceId && this.catalog.find(thread.cwd)?.id !== workspaceId) return '会话工作区发生变化，暂停投递'
+        if (thread.externalOwner) return '等待原终端释放会话'
+        if (thread.choicePending || this.approvals().some(row => row.threadId === thread.id)) return '接收方正在等待用户答复'
+        if (thread.turnId || this.compactions.has(thread.id) || this.submitting.has(thread.id) || this.queued.some(row => row.threadId === thread.id)) return '接收方忙碌，排在当前任务之后'
+        if (workspaceId && !await this.connectTeam(thread.id)) return '等待原会话空闲后接入团队工具'
+        return null
+      },
+      send: async (row, text, purpose) => {
+        try {
+          const options = await this.preferences.options(row.to)
+          const deferToUserQueue = () => {
+            if (this.queued.some(message => message.threadId === row.to) || this.draining.has(row.to)) throw new BridgeError('BUSY', '用户消息已排队，团队通信将在之后投递', 409)
+          }
+          await this.message(row.to, { ...options, ...(!workspaceId || purpose === 'review' ? { mode: 'read-only' as const, approvalPolicy: 'on-request' as const } : {}),
+            text, steer: false, clientMessageId: row.deliveryId, transientOptions: true }, undefined, deferToUserQueue, purpose !== 'review' && !row.batchId)
+        } catch (error) {
+          if (error instanceof BridgeError && ['BUSY', 'SESSION_IN_USE'].includes(error.code)) {
+            const receipt = await this.submissions.get(row.to, row.deliveryId)
+            if (receipt?.state === 'rejected') await this.submissions.forget(row.deliveryId)
+          }
+          throw error
+        }
+      },
+      receipt: async row => (await this.delivery(row.to, row.deliveryId)).state,
+      createMember: async request => {
+        const defaults = await this.preferences.options(), model = request.useDefaults ? defaults.model : request.model, effort = request.useDefaults ? defaults.effort : request.effort
+        const result = record(await this.rpc.call('model/list', { limit: 100 }))
+        const models = array(result.data).map(record), chosen = model ? models.find(m => string(m.model) === model || string(m.id) === model) : models.find(m => m.isDefault === true)
+        if (model && !chosen || effort && chosen && !array(chosen.supportedReasoningEfforts).some(e => string(record(e).reasoningEffort) === effort)) throw new BridgeError('TEAM_MODEL', '所选模型或推理强度不可用，请修改申请配置', 400)
+        const cwd = workspaceId ? this.catalog.get(workspaceId).root : this.catalog.list()[0]?.path
+        if (!cwd) throw new BridgeError('WORKSPACE_MISSING', '请先选择工作区')
+        const thread = await this.create(cwd, model, effort)
+        await this.rename(thread.id, request.name)
+        return { threadId: thread.id, cwd: thread.cwd, model: thread.model || model, effort }
+      },
+    }
+  }
+  async teamForWorkspace(workspaceId?: string) {
+    if (this.team) {
+      if (workspaceId && workspaceId !== this.catalog.list()[0]?.id) throw new BridgeError('TEAM_WORKSPACE', '团队试验只使用专用工作区', 403)
+      return this.team
+    }
+    if (!this.workspaceTeams) throw new BridgeError('TEAM_DISABLED', '此服务尚未启用工作区团队', 404)
+    if (!workspaceId) throw new BridgeError('TEAM_WORKSPACE', '请选择团队所属工作区', 400)
+    return this.workspaceTeams.get(workspaceId)
+  }
+  async teamForThread(id: string) {
+    if (this.team) return (await this.team.snapshot()).members.some(member => member.threadId === id) ? this.team : undefined
+    return this.workspaceTeams?.forThread(id)
+  }
+  async teamAgentTool(token: string, name: string, args: unknown, workspaceId?: string) {
+    if (this.team) return (await this.teamForWorkspace(workspaceId)).agentTool(token, name, args)
+    if (this.workspaceTeams) return this.workspaceTeams.agentTool(token, name, args, workspaceId)
+    throw new BridgeError('TEAM_TOKEN', '团队工具身份无效', 403)
+  }
+  async teamCandidates(workspaceId: string) {
+    const team = await this.teamForWorkspace(workspaceId), state = await team.snapshot()
+    const threads = await this.refreshList(true)
+    const preferences = await this.preferences.snapshot()
+    return Promise.all(threads.filter(row => this.catalog.find(row.cwd)?.id === workspaceId && !state.members.some(member => member.threadId === row.id)).map(async row => {
+      const options = preferences.sessionOptions[row.id]
+      const native = options ? {} : record(record(await this.rpc.call('thread/read', { threadId: row.id, includeTurns: false })).thread)
+      return { threadId: row.id, title: row.title, model: options?.model || string(native.model) || this.threads.get(row.id)?.model || '',
+        effort: options?.effort || string(native.reasoningEffort), busy: row.status === 'inProgress' || Boolean(this.threads.get(row.id)?.turnId) }
+    }))
+  }
+  async importTeamMember(workspaceId: string, raw: unknown) {
+    const input = z.object({ threadId: z.string().min(1).max(200), level: z.number().int().min(1).max(10), parentId: z.string().nullable(), groupId: z.string().nullable() }).strict().parse(raw)
+    if (input.level > 1 && !input.parentId || input.level === 1 && (input.parentId || input.groupId)) throw new BridgeError('TEAM_GRAPH', '请选择有效的直属上级；最高负责人不属于其他分组', 400)
+    const team = await this.teamForWorkspace(workspaceId)
+    await this.refreshList(true)
+    const summary = this.summaries.get(input.threadId)
+    if (!summary || this.catalog.find(summary.cwd)?.id !== workspaceId) throw new BridgeError('TEAM_WORKSPACE', '只能加入当前工作区的已有会话', 403)
+    const existing = await this.teamForThread(input.threadId)
+    if (existing && existing !== team) throw new BridgeError('TEAM_WORKSPACE', '此会话已经属于其他工作区团队', 403)
+    const native = record(record(await this.rpc.call('thread/read', { threadId: input.threadId, includeTurns: false })).thread)
+    if (this.catalog.find(string(native.cwd))?.id !== workspaceId) throw new BridgeError('TEAM_WORKSPACE', '会话工作区已变化，请刷新后选择', 403)
+    const options = (await this.preferences.snapshot()).sessionOptions[input.threadId]
+    await team.register({ ...input, name: summary.title, cwd: string(native.cwd), role: input.level === 1 ? 'lead' : input.level === 2 ? 'manager' : 'worker',
+      model: options?.model || string(native.model), effort: options?.effort || string(native.reasoningEffort), useDefaults: false })
+    // Import is metadata-only. Tool configuration attaches on the next idle user turn or delivery.
+    return team.snapshot()
+  }
+  async setupTeamPilot() {
+    if (!this.team) throw new BridgeError('TEAM_DISABLED', '当前实例未启用隔离团队试验', 404)
+    if (!this.teamSetup) this.teamSetup = (async () => {
+      await this.initialize()
+      const cwd = this.catalog.list()[0]?.path
+      if (!cwd) throw new BridgeError('WORKSPACE_MISSING', '请先建立隔离测试工作区')
+      for (const [role, name] of [['lead', '试验-负责人'], ['manager', '试验-项目主管'], ['worker', '试验-执行成员']] as const) {
+        if ((await this.team!.snapshot()).members.some(row => row.role === role)) continue
+        const thread = await this.create(cwd)
+        await this.rename(thread.id, name)
+        await this.team!.register({ threadId: thread.id, name, role, cwd })
+      }
+      await this.team!.enable(true)
+    })().finally(() => { this.teamSetup = undefined })
+    await this.teamSetup
+    return this.team.snapshot()
+  }
+  async startTeamPilot(clientMessageId: string) {
+    const state = await this.team?.snapshot()
+    if (!state?.enabled || state.members.length < 3) throw new BridgeError('TEAM_PAUSED', '请先建立并开启至少三层的试验团队', 409)
+    const lead = state.members.find(row => row.level === 1)!
+    const roundTrip = (a: string, b: string) => !teamRoute(state, a, b).error && !teamRoute(state, b, a).error
+    const manager = state.members.find(row => row.parentId === lead.threadId && roundTrip(lead.threadId, row.threadId) && state.members.some(child => child.parentId === row.threadId && roundTrip(row.threadId, child.threadId)))
+    if (!manager) throw new BridgeError('TEAM_ROUTE', '演示需要负责人、直属主管与执行成员之间开放双向通信', 409)
+    const receipt = await this.submissions.get(lead.threadId, clientMessageId)
+    if (receipt) {
+      if ((await this.delivery(lead.threadId, clientMessageId)).state === 'accepted') return { threadId: lead.threadId }
+      throw new BridgeError(receipt.state === 'rejected' ? 'MESSAGE_REJECTED' : 'MESSAGE_RESULT_UNKNOWN', '演示提交已有记录，请进入负责人会话核对，未重复启动。', 409)
+    }
+    if (state.messages.some(row => teamOutstanding.has(row.state)) || state.memberRequests.some(row => ['pending', 'creating', 'uncertain'].includes(row.state))) throw new BridgeError('TEAM_PENDING', '先处理现有申请，再发起下一轮演示', 409)
+    await this.message(lead.threadId, { ...await this.preferences.options(lead.threadId), mode: 'read-only', approvalPolicy: 'on-request', clientMessageId,
+      text: `开始一次隔离团队演示。不要使用 shell、文件或网络工具。请用 team_propose_message，to=${manager.threadId}、kind=task、requestKey=${clientMessageId}，标题“计算 7+5”，正文简短写“请委派直属执行成员计算 7+5，再将结果逐级汇报给我。”。不要在任务正文重复工具说明、参数或审批规则。主管收到后派给自己的直属成员并关联消息，成员和主管都用 kind=result 逐级回复；只提出请求就结束本轮，等待系统处理，不轮询。负责人收到最终结果后给用户一句总结即可。` })
+    return { threadId: lead.threadId }
+  }
   private historyMetadata(window: HistoryWindow) { return { hasOlder: Boolean(window.cursor), ...(window.cursor ? { cursor: window.cursor } : {}) } }
   private historyEpoch(id: string) { return `${this.reconciliationEpoch}:${this.historyEpochs.get(id) || 0}` }
   private checkHistoryEpoch(id: string, epoch: string) {
@@ -352,11 +505,12 @@ export class Bridge extends EventEmitter {
   }
   private async owner(id: string) {
     if (!this.sharedHistory || this.ownedTurns.has(id) || this.fresh.has(id)) return undefined
-    if (this.rpc.sharedEngine) {
+    const rpc = this.source(id)
+    if (rpc.sharedEngine) {
       const result = record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false }))
-      return record(record(result.thread).status).type === 'active' ? this.rpc.enginePid || 1 : undefined
+      return record(record(result.thread).status).type === 'active' ? rpc.enginePid || 1 : undefined
     }
-    return (await sessionOwners(this.codexHome, this.rpc.pid)).get(id)
+    return (await sessionOwners(rpc === this.rpc ? this.codexHome : rpc.home || this.codexHome, rpc.pid)).get(id)
   }
   private async assertAvailable(id: string) {
     const pid = await this.owner(id)
@@ -371,6 +525,39 @@ export class Bridge extends EventEmitter {
     } catch { return false }
   }
   async handoff(id: string) { await this.assertAvailable(id); return this.open(id, true) }
+  private async hasTeamMcp(id: string) {
+    try {
+      const status = record(await this.rpc.call('mcpServerStatus/list', { threadId: id, serverName: this.teamMcpName, detail: 'toolsAndAuthOnly' }))
+      const server = array(status.data).map(record).find(value => value.name === this.teamMcpName && record(value.serverInfo).name === 'cweb-team')
+      return teamTools.every(tool => Boolean(record(server?.tools)[tool.name]))
+    } catch { return false }
+  }
+  async connectTeam(id: string, ownSubmission = false): Promise<boolean> {
+    if (this.nativeTeamThreads.has(id) || this.teamMcpThreads.has(id)) return true
+    if (!this.httpOrigin || !await this.teamForThread(id)) return false
+    const pending = this.teamLinks.get(id)
+    if (pending) return pending
+    const operation = (async () => {
+      const unavailable = () => this.disposed || this.threads.get(id)?.turnId || this.compactions.has(id) || !ownSubmission && (this.submitting.has(id) || this.queued.some(row => row.threadId === id)) || this.approvals().some(row => row.threadId === id)
+      if (unavailable() || await this.owner(id)) return false
+      if (await this.hasTeamMcp(id)) { this.teamMcpThreads.add(id); return true }
+      const before = record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false })).thread)
+      if (unavailable() || record(before.status).type === 'active') return false
+      if (this.loaded.has(id) || record(before.status).type !== 'notLoaded') {
+        // Unsubscribe only while idle. Another native client may keep it loaded;
+        // in that case wait rather than interrupting it or claiming tools exist.
+        await this.rpc.call('thread/unsubscribe', { threadId: id })
+        this.loaded.delete(id); this.fresh.delete(id); this.teamMcpThreads.delete(id); this.todoMcpThreads.delete(id)
+        const after = record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false })).thread)
+        if (record(after.status).type !== 'notLoaded') return false
+      }
+      if (unavailable()) return false
+      await this.open(id, true)
+      return this.teamMcpThreads.has(id)
+    })().finally(() => this.teamLinks.delete(id))
+    this.teamLinks.set(id, operation)
+    return operation
+  }
   async connectTodo(id: string, allowQueue = false) {
     if (!this.plugin.enabled) throw new BridgeError('PLUGIN_DISABLED', '待办便签已停用', 409)
     await this.assertAvailable(id)
@@ -389,7 +576,15 @@ export class Bridge extends EventEmitter {
     if (!this.loaded.has(id)) return
     if (this.compactions.has(id) || this.threads.get(id)?.turnId || this.submitting.has(id) || (!allowQueue && this.queued.some(row => row.threadId === id))) throw new BridgeError('BUSY', '当前会话仍在执行或排队，请先停止任务', 409)
     await this.rpc.call('thread/unsubscribe', { threadId: id })
-    this.loaded.delete(id); this.fresh.delete(id); this.todoMcpThreads.delete(id)
+    this.loaded.delete(id); this.fresh.delete(id); this.todoMcpThreads.delete(id); this.teamMcpThreads.delete(id)
+  }
+  async releaseToTerminal(id: string) {
+    const thread = await this.open(id)
+    await this.assertAvailable(id)
+    await this.release(id)
+    const source = this.source(id), home = source === this.rpc ? this.codexHome : source.home || this.codexHome
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+    return `CODEX_HOME=${quote(home)} codex resume --cd ${quote(thread.cwd)} ${quote(id)}`
   }
   async archives(): Promise<ThreadSummary[]> {
     await this.rpc.start(); const threads: ThreadSummary[] = []; let cursor: string | undefined
@@ -780,13 +975,15 @@ export class Bridge extends EventEmitter {
     ])
     await this.refreshList()
     const modes = await this.collaborationModes()
-    const models = modelsResult.status === 'fulfilled' ? array(record(modelsResult.value).data).map(value => {
+    const models: ModelOption[] = modelsResult.status === 'fulfilled' ? array(record(modelsResult.value).data).map(value => {
       const model = record(value)
+      const fastTier = array(model.serviceTiers).map(record).find(tier => tier.id === 'priority' || tier.id === 'fast')?.id
       return { id: string(model.model) || string(model.id), label: string(model.displayName) || string(model.model),
-        efforts: array(model.supportedReasoningEfforts).map(value => string(record(value).reasoningEffort)) }
+        efforts: array(model.supportedReasoningEfforts).map(value => string(record(value).reasoningEffort)),
+        ...(model.isDefault === true ? { isDefault: true } : {}), ...(fastTier === 'priority' || fastTier === 'fast' ? { fastTier } : {}) }
     }) : []
     const account = accountResult.status === 'fulfilled' ? record(record(accountResult.value).account) : {}
-    return { capabilities: { pagedHistory: true, diagnostics: true, durableMessages: true, mcpElicitation: true, nativeActions: true, fileReferences: true, filePreview: true, imagePreviewExperience: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true, contextUsageMenu: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
+    return { capabilities: { settingDefaults: true, teamMode: Boolean(this.workspaceTeams), teamPilot: Boolean(this.team), pagedHistory: true, diagnostics: true, durableMessages: true, mcpElicitation: true, nativeActions: true, fileReferences: true, filePreview: true, imagePreviewExperience: true, externalFileOpening: true, planning: modes.some(mode => mode.mode === 'plan'), goals: true, turnMetrics: true, nativeAsyncQuestions: true, messageEditing: true, clientMessageIds: true, turnReconciliation: true, progressStatus: true, safeAutoRecovery: true, onDemandImages: true, contextDedup: true, contextUsageMenu: true }, ...await this.preferences.snapshot(), queue: this.queue(), root: this.catalog.list()[0]?.path || '', workspaces: this.catalog.list(), plugins: { todoNote: this.plugin.enabled }, codexHome: this.codexHome, sharedHistory: this.sharedHistory, sharedEngine: this.rpc.sharedEngine, runtime: this.rpc.status, models,
       account: string(account.type) || '未检测到登录；自定义供应商可使用环境变量', threads: this.list() }
   }
 
@@ -848,9 +1045,9 @@ export class Bridge extends EventEmitter {
     return this.list()
   }
 
-  async create(cwd: string, model?: string): Promise<ThreadView> {
+  async create(cwd: string, model?: string, effort?: string): Promise<ThreadView> {
     this.creating++
-    try { return await this.createThread(cwd, model) }
+    try { return await this.createThread(cwd, model, effort) }
     finally { this.creating-- }
   }
 
@@ -890,24 +1087,32 @@ export class Bridge extends EventEmitter {
     finally { this.submitting.delete(id) }
   }
 
-  private async createThread(cwd: string, model?: string): Promise<ThreadView> {
+  private async createThread(cwd: string, model?: string, effort?: string): Promise<ThreadView> {
     await this.initialize()
     const directory = await this.catalog.forPath(cwd).directory(cwd)
     await this.rpc.start()
     const options = await this.preferences.options()
+    if (this.team) { options.mode = 'read-only'; options.approvalPolicy = 'on-request' }
     if (options.mode === 'danger-full-access') options.approvalPolicy = 'never'
     if (model !== undefined) options.model = model
+    if (effort !== undefined) options.effort = effort
     const preferences = (await this.preferences.snapshot()).preferences
+    const workspaceTeam = this.workspaceTeams ? await this.workspaceTeams.get(this.catalog.find(directory)!.id) : undefined
+    const requestedOptions = { ...options }
+    Object.assign(options, withModelDefaults(options, preferences))
+    const includeTeamTools = Boolean(this.team || workspaceTeam && (await workspaceTeam.snapshot()).enabled)
     const response = record(await this.rpc.call('thread/start', {
       cwd: directory, sandbox: options.mode, approvalPolicy: options.approvalPolicy, approvalsReviewer: 'user',
       ...(options.model ? { model: options.model } : {}),
-      dynamicTools: [...(this.plugin.enabled ? todoTools : []), ...(preferences.genui ? [genuiTool, genuiValidateTool] : [])],
-      config: { 'sandbox_workspace_write.exclude_tmpdir_env_var': true, 'sandbox_workspace_write.exclude_slash_tmp': true, ...await this.skillConfig(directory) },
+      dynamicTools: [...(this.plugin.enabled ? todoTools : []), ...(preferences.genui ? [genuiTool, genuiValidateTool] : []), ...(includeTeamTools ? teamTools : [])],
+      ...(this.team ? { sandbox: 'read-only', approvalPolicy: 'on-request', developerInstructions: '这是隔离团队试验，只处理文本，不运行 shell 或操作实际项目。按 team_members 返回的职责、箭头与层级通信，禁止越级。同层通信需双方直属上级审核。派发使用 team_propose_message；主标题简短、正文只写任务与验收条件，不重复工具协议。收到团队审核时只用 team_review_message 返回判断，不执行待审任务。新增成员用 team_request_member 请求用户批准，不能自行创建。可在一轮内提交多条独立子任务，全部提交后结束本轮，不轮询。' } : {}),
+      config: { 'sandbox_workspace_write.exclude_tmpdir_env_var': true, 'sandbox_workspace_write.exclude_slash_tmp': true, ...(options.effort ? { model_reasoning_effort: options.effort } : {}), ...await this.skillConfig(directory) },
     }))
     const thread = projectThread(response.thread)
     if (!thread.id) throw new BridgeError('CLI_PROTOCOL', 'Codex 未返回会话编号', 502)
+    if (includeTeamTools) this.nativeTeamThreads.add(thread.id)
     thread.model = string(response.model) || thread.model
-    await this.preferences.setOptions(thread.id, { ...options, model: thread.model || options.model })
+    await this.preferences.setOptions(thread.id, requestedOptions)
     this.publish({ type: 'preferences', ...await this.preferences.snapshot() })
     if (this.plugin.enabled) await this.plugin.register(thread.id)
     this.loaded.add(thread.id); this.fresh.add(thread.id); this.changed(thread)
@@ -916,10 +1121,11 @@ export class Bridge extends EventEmitter {
 
   async open(id: string, activate = false): Promise<ThreadView> {
     await this.rpc.start()
+    if (!this.summaries.has(id) && !this.fresh.has(id)) await this.refreshList(true)
     const externalOwner = await this.owner(id)
     if (activate && externalOwner) await this.assertAvailable(id)
     const known = this.threads.get(id)
-    if (known && this.loaded.has(id) && !externalOwner && (!this.rpc.sharedEngine || this.ownedTurns.has(id) || this.fresh.has(id))) {
+    if (known && this.loaded.has(id) && !externalOwner && (!this.source(id).sharedEngine || this.ownedTurns.has(id) || this.fresh.has(id))) {
       const current = await this.reconcile(id) || known
       if (activate || !this.needsHistoryTrim(current)) return current
     }
@@ -958,7 +1164,7 @@ export class Bridge extends EventEmitter {
     this.checkHistoryEpoch(id, epoch)
     const current = this.threads.get(id)
     if (this.ownedTurns.has(id) && current?.turnId) { thread.turnId = current.turnId; thread.status = current.status; thread.progress = current.progress }
-    else { thread.turnId = null; if (thread.status === 'inProgress') thread.status = 'idle' }
+    else if (!externalOwner) { thread.turnId = null; if (thread.status === 'inProgress') thread.status = 'idle' }
     this.readAt.set(id, Date.now()); this.changed(thread); return thread
   }
 
@@ -983,6 +1189,14 @@ export class Bridge extends EventEmitter {
     const before = useMcp ? record(record(await this.rpc.call('thread/read', { threadId: id, includeTurns: false })).thread).status : null
     const initialStatus = string(record(before).type)
     const config: Record<string, unknown> = await this.skillConfig(cwd)
+    const team = await this.teamForThread(id)
+    const savedOptions = (await this.preferences.snapshot()).sessionOptions[id]
+    const preserveNativeOptions = Boolean(this.workspaceTeams && team && !savedOptions)
+    const useTeamMcp = team && this.httpOrigin && !this.nativeTeamThreads.has(id)
+    if (useTeamMcp) config[`mcp_servers.${this.teamMcpName}`] = {
+      command: process.execPath, args: [fileURLToPath(new URL('../plugins/team/mcp.mjs', import.meta.url))],
+      env: { CWEB_TEAM_ORIGIN: this.httpOrigin, CWEB_TEAM_TOKEN: await team.toolToken(id) }, startup_timeout_sec: 5, default_tools_approval_mode: 'approve',
+    }
     if (useMcp) config[`mcp_servers.${this.todoMcpName}`] = {
       command: process.execPath,
       args: [fileURLToPath(new URL('../plugins/todo-note/mcp.mjs', import.meta.url))],
@@ -993,10 +1207,18 @@ export class Bridge extends EventEmitter {
       default_tools_approval_mode: 'approve',
     }
     const result = record(await this.rpc.call('thread/resume', {
-      threadId: id, cwd, excludeTurns: true, sandbox: (await this.preferences.options(id)).mode, approvalPolicy: (await this.preferences.options(id)).approvalPolicy, approvalsReviewer: 'user',
+      threadId: id, cwd, excludeTurns: true,
+      ...(preserveNativeOptions ? {} : { sandbox: (await this.preferences.options(id)).mode, approvalPolicy: (await this.preferences.options(id)).approvalPolicy, approvalsReviewer: 'user' }),
       config,
     }))
     this.checkHistoryEpoch(id, epoch)
+    if (preserveNativeOptions) {
+      const modes: Record<string, Mode> = { readOnly: 'read-only', workspaceWrite: 'workspace-write', dangerFullAccess: 'danger-full-access' }
+      const mode = modes[string(record(result.sandbox).type)], approval = string(result.approvalPolicy)
+      if (!mode || !['on-request', 'untrusted', 'never'].includes(approval) || mode === 'danger-full-access' && approval !== 'never') throw new BridgeError('TEAM_OPTIONS', '此原生会话的权限配置尚不支持团队自动投递，请在会话设置中明确选择权限后重试', 409)
+      await this.preferences.setOptions(id, { mode, approvalPolicy: approval as ApprovalPolicy, model: string(result.model), effort: string(result.reasoningEffort) })
+      this.publish({ type: 'preferences', ...await this.preferences.snapshot() })
+    }
     const thread = await this.projectHistory(result.thread)
     this.checkHistoryEpoch(id, epoch)
     thread.recovery = this.threads.get(id)?.recovery
@@ -1004,6 +1226,11 @@ export class Bridge extends EventEmitter {
     thread.contextUsage ||= this.threads.get(id)?.contextUsage
     if (['scheduled', 'retrying'].includes(thread.recovery?.state || '')) thread.error = null
     thread.model = string(result.model) || thread.model
+    this.teamMcpThreads.delete(id)
+    if (useTeamMcp) for (let i = 0; i < 8; i++) {
+      if (await this.hasTeamMcp(id)) { this.teamMcpThreads.add(id); break }
+      if (i < 7) await new Promise(resolve => setTimeout(resolve, 150))
+    }
     this.todoMcpThreads.delete(id)
     if (this.plugin.enabled && nativeTodo) thread.todoTools = 'native'
     else if (useMcp) {
@@ -1016,7 +1243,7 @@ export class Bridge extends EventEmitter {
       }
       thread.todoTools = this.todoMcpThreads.has(id) ? 'mcp' : 'waiting'
     } else if (this.plugin.enabled) thread.todoTools = 'waiting'
-    if (this.rpc.sharedEngine && record(record(result.thread).status).type !== 'active') {
+    if (this.source(id).sharedEngine && record(record(result.thread).status).type !== 'active') {
       thread.turnId = null
       if (thread.status === 'inProgress') thread.status = 'idle'
     }
@@ -1025,16 +1252,16 @@ export class Bridge extends EventEmitter {
     return thread
   }
 
-  async message(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }): Promise<void> {
+  async message(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }, beforeStart?: () => void, eligibleForRecovery = true): Promise<void> {
     this.cancelRecovery(id)
     const key = input.clientMessageId
-    if (!key) return this.submitMessage(id, input, edit)
+    if (!key) return this.submitMessage(id, input, edit, undefined, eligibleForRecovery, beforeStart)
     const claimed = await this.submissions.claim(id, key, { input, edit })
     if (!claimed.fresh) {
       if (claimed.receipt.state === 'accepted') return
       throw new BridgeError(claimed.receipt.state === 'rejected' ? 'MESSAGE_REJECTED' : 'MESSAGE_RESULT_UNKNOWN', claimed.receipt.state === 'rejected' ? '这条提交已被拒绝，请恢复草稿后重新发送。' : '这条消息的提交结果正在核对，未重复执行。', 409)
     }
-    try { await this.submitMessage(id, input, edit); await this.submissions.settle(key, 'accepted') }
+    try { await this.submitMessage(id, input, edit, undefined, eligibleForRecovery, beforeStart); await this.submissions.settle(key, 'accepted') }
     catch (error) {
       const code = error instanceof BridgeError ? error.code : 'INTERNAL'
       // NOT_RUNNING is checked before steer is sent; the client can safely
@@ -1065,7 +1292,7 @@ export class Bridge extends EventEmitter {
     return { state: 'unknown' as const, code: receipt?.code }
   }
 
-  private async submitMessage(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }, recovery?: RecoverySource, eligibleForRecovery = true): Promise<void> {
+  private async submitMessage(id: string, input: MessageInput, edit?: { itemId: string; turnId: string }, recovery?: RecoverySource, eligibleForRecovery = true, beforeStart?: () => void): Promise<void> {
     if (this.compactions.has(id)) throw new BridgeError('BUSY', '上下文正在压缩，请完成后再发送消息', 409)
     if (this.submitting.has(id) && !this.ownedTurns.has(id) && ['completed', 'interrupted', 'failed'].includes(this.threads.get(id)?.status || '')) {
       await this.submissionDone.get(id)
@@ -1078,13 +1305,18 @@ export class Bridge extends EventEmitter {
     this.submissionDone.set(id, promise)
     let reverted = false
     try {
+      beforeStart?.()
+      if (this.workspaceTeams && !input.steer && await this.teamForThread(id)) await this.connectTeam(id, true)
       let thread = await this.open(id, true)
       await this.catalog.forPath(thread.cwd).directory(thread.cwd)
       const options = { ...await this.preferences.options(id), mode: input.mode,
         ...(input.model !== undefined ? { model: input.model } : {}), ...(input.effort !== undefined ? { effort: input.effort } : {}),
+        ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
         ...(input.collaborationMode ? { collaborationMode: input.collaborationMode } : {}),
         ...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}) }
       if (options.mode === 'danger-full-access') options.approvalPolicy = 'never'
+      const requestedOptions = { ...options }
+      Object.assign(options, withModelDefaults(options, (await this.preferences.snapshot()).preferences))
       const skillPaths = [...new Set(input.skills || [])]
       const available = skillPaths.length ? (await this.skills(this.catalog.find(thread.cwd)?.id)).skills : []
       const selectedSkills = skillPaths.map(path => {
@@ -1138,15 +1370,19 @@ export class Bridge extends EventEmitter {
         await this.metrics.save(thread)
       }
       const note = await this.plugin.contextParts(id, this.todoMcpThreads.has(id) ? this.todoMcpName : undefined)
+      const memberTeam = await this.teamForThread(id)
+      const teamContext = memberTeam && (this.nativeTeamThreads.has(id) || this.teamMcpThreads.has(id))
+        ? '当前会话已加入工作区团队，仍保留独立历史和权限。需要跨会话协作时先用 team_members 查看职责、层级与箭头；只用 team_propose_message 提出任务、问题或结果，不能绕过审批直接操作其他会话。主标题简短，正文写清工作与验收条件。新增成员用 team_request_member 申请用户批准。可在同一轮提交分给不同成员的独立子任务。先提交可以同时开工的工作，只有真正依赖前序产出或存在写入冲突的任务才等待。系统安排的审核只用 team_review_message 按项判断，不执行待审正文。独立请求提交完毕后结束本轮，不轮询。'
+        : ''
       if (!this.observedContexts.has(id)) {
         await Promise.all([this.sessionContexts.invalidate(id), this.sessionContexts.invalidate(`${id}:live`)])
         this.observedContexts.add(id)
       }
-      const context = [note.instructions, preferences.genui ? genuiInstructions : '', choiceInstructions, 'To show a workspace screenshot or image in cweb, include a Markdown image with its absolute or workspace-relative file path. PNG, JPEG, WebP, GIF and AVIF are rendered locally; prefer this to returning only a filename.', 'Keep the user informed with brief, plain-language progress updates describing observable actions and their results. Match the conversation language. Do not expose internal reasoning.'].filter(Boolean).join('\n\n')
+      const context = [note.instructions, teamContext, preferences.genui ? genuiInstructions : '', choiceInstructions, 'To show a workspace screenshot or image in cweb, include a Markdown image with its absolute or workspace-relative file path. PNG, JPEG, WebP, GIF and AVIF are rendered locally; prefer this to returning only a filename.', 'Keep the user informed with brief, plain-language progress updates describing observable actions and their results. Match the conversation language. Do not expose internal reasoning.'].filter(Boolean).join('\n\n')
       const inject = (text: string) => this.rpc.call('thread/inject_items', { threadId: id, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text }] }] })
       if (context) await this.sessionContexts.ensure(id, context, () => inject(context))
       if (note.snapshot) await this.sessionContexts.ensure(`${id}:live`, note.snapshot, () => inject(note.snapshot))
-      const quota = await this.captureQuota(); if (quota) this.quotaPending.set(id, quota)
+      const quota = await this.captureQuota()
       if (recovery) {
         const current = () => this.threads.get(id)
         const valid = () => this.autoRecoveries.get(id) === recovery && !this.disposed && !current()?.turnId && current()?.status === 'failed' && current()?.runs?.at(-1)?.id === recovery.sourceTurnId
@@ -1157,6 +1393,10 @@ export class Bridge extends EventEmitter {
         if (!valid() || !beforeCommit.autoRecovery || !recoveryPolicy({ ...current()!, items: native.items, choicePending: current()?.choicePending || native.choicePending, error: native.error || recovery.failure }, recovery.sourceTurnId, recovery.blocked || this.approvals().some(approval => approval.threadId === id)).allowed) throw new BridgeError('AUTO_RECOVERY_CANCELLED', '自动重试条件已变化', 409)
         recovery.starting = true
       }
+      // A Tab message can arrive during asynchronous context/quota preparation,
+      // after team availability was checked. Recheck before native submission.
+      beforeStart?.()
+      if (quota) this.quotaPending.set(id, quota)
       if (!recovery && eligibleForRecovery && preferences.autoRecovery) this.autoRecoveries.set(id, { input: structuredClone({ ...input, ...options, model: options.model || thread.model, steer: false }), sourceTurnId: '', attempt: 0, failure: '', starting: true })
       this.ownedTurns.add(id)
       try { const response = record(await this.rpc.call('turn/start', {
@@ -1165,6 +1405,7 @@ export class Bridge extends EventEmitter {
         sandboxPolicy: input.mode === 'danger-full-access' ? { type: 'dangerFullAccess' } : input.mode === 'read-only' ? { type: 'readOnly', networkAccess: false }
           : { type: 'workspaceWrite', writableRoots: [thread.cwd], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
         ...(options.model ? { model: options.model } : {}), ...(options.effort ? { effort: options.effort } : {}),
+        ...(options.serviceTier ? { serviceTierForTurn: options.serviceTier } : {}),
         ...(collaborationMode ? { collaborationMode } : {}),
       })); this.fresh.delete(id)
         const turnId = string(record(response.turn).id)
@@ -1180,7 +1421,8 @@ export class Bridge extends EventEmitter {
         // immediately, without reviving a turn that already completed in the stream.
         if (latest && turnId && this.ownedTurns.has(id) && latest.turnId !== turnId) this.changed({ ...latest, turnId, status: 'inProgress', error: null })
       } catch (error) { this.ownedTurns.delete(id); this.quotaPending.delete(id); if (!this.autoRecoveries.get(id)?.sourceTurnId) this.cancelRecovery(id); throw error }
-      await this.preferences.setOptions(id, options); await this.preferences.recordSkills(skillPaths)
+      if (!input.transientOptions) await this.preferences.setOptions(id, requestedOptions)
+      await this.preferences.recordSkills(skillPaths)
       this.publish({ type: 'preferences', ...await this.preferences.snapshot() })
     } catch (error) {
       if (reverted) throw new BridgeError('EDIT_REVERTED', `对话已回退，新消息未确认发送。请检查记录后恢复草稿重试：${error instanceof Error ? error.message : 'CLI 请求失败'}`, 502)
@@ -1348,6 +1590,11 @@ export class Bridge extends EventEmitter {
     if (recovery) recovery.blocked = true
     if (method === 'item/tool/call' && this.threads.has(threadId)) {
       const run = async () => {
+        if (teamTools.some(tool => tool.name === params.tool)) {
+          const team = await this.teamForThread(threadId)
+          if (!team) throw new BridgeError('TEAM_MEMBER', '当前会话尚未加入团队', 403)
+          return team.tool(threadId, string(params.tool), params.arguments)
+        }
         if (!['render_ui', 'validate_dsh_ui'].includes(string(params.tool))) return this.plugin.call(threadId, string(params.tool), params.arguments)
         if (!(await this.preferences.snapshot()).preferences.genui) throw new BridgeError('PLUGIN_DISABLED', 'GenUI 已停用')
         if (params.tool === 'validate_dsh_ui') return this.genui.validate(params.arguments)
@@ -1391,6 +1638,8 @@ export class Bridge extends EventEmitter {
   }
 
   async dispose() {
+    await this.team?.close()
+    await this.workspaceTeams?.close()
     this.diagnostics.dispose()
     for (const id of this.compactions.keys()) this.finishCompact(id, false)
     for (const id of this.autoRecoveries.keys()) this.cancelRecovery(id)

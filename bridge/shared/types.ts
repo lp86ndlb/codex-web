@@ -1,7 +1,11 @@
+import type { TodoCount } from './todo-count.ts'
+
 export type Mode = 'workspace-write' | 'read-only' | 'danger-full-access'
 export type ApprovalPolicy = 'on-request' | 'untrusted' | 'never'
 export type ActivityCollapseTiming = 'completion' | 'next-input' | 'never'
-export interface SessionOptions { model: string; effort: string; mode: Mode; approvalPolicy: ApprovalPolicy; collaborationMode?: 'default' | 'plan' }
+export type FastTier = 'priority' | 'fast'
+export type ServiceTierSelection = '' | 'default' | FastTier
+export interface SessionOptions { model: string; effort: string; mode: Mode; approvalPolicy: ApprovalPolicy; collaborationMode?: 'default' | 'plan'; serviceTier?: ServiceTierSelection }
 export interface Preferences extends SessionOptions {
   theme: 'dark' | 'light' | 'system'; fontSize: number; uiFontSize: number
   animations: boolean; sendKey: 'enter' | 'mod-enter'; codeWrap: boolean; showInspector: boolean; genui: boolean; showActivityDetails: boolean
@@ -11,9 +15,10 @@ export interface Preferences extends SessionOptions {
   filePreviewLayout: 'dialog' | 'side'
   inlineImageSize: 'comfortable' | 'compact'
   imagePreviewZoom: 'fit' | 'actual'
+  todoPlacement: 'sidebar' | 'floating'
 }
 export const defaultPreferences: Preferences = { model: '', effort: '', mode: 'workspace-write', approvalPolicy: 'on-request',
-  theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: false, genui: true, showActivityDetails: true, activityCollapseTiming: 'next-input', autoRecovery: true, imageInputMode: 'on-demand', filePreviewLayout: 'dialog', inlineImageSize: 'comfortable', imagePreviewZoom: 'fit' }
+  theme: 'dark', fontSize: 16, uiFontSize: 14, animations: true, sendKey: 'enter', codeWrap: false, showInspector: true, genui: true, showActivityDetails: true, activityCollapseTiming: 'next-input', autoRecovery: true, imageInputMode: 'on-demand', filePreviewLayout: 'dialog', inlineImageSize: 'comfortable', imagePreviewZoom: 'fit', todoPlacement: 'sidebar' }
 export interface UsageWindow { usedPercent: number; windowDurationMins?: number | null; resetsAt?: number | null }
 export interface UsageLimits { limitName?: string | null; primary?: UsageWindow | null; secondary?: UsageWindow | null; credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | null } | null }
 export interface AccountStatus { accountType: string; planType: string; limits: UsageLimits[]; error?: string; updatedAt?: number; stale?: boolean }
@@ -124,7 +129,9 @@ export interface ThreadPatch {
 }
 
 /** Lightweight browser state for background badges and completion notices. */
-export type ActivityView = Pick<ThreadView, 'id' | 'revision' | 'title' | 'cwd' | 'status' | 'updatedAt' | 'turnId' | 'choicePending' | 'externalOwner' | 'compacting'> & {
+export type ActivityView = Pick<ThreadView, 'id' | 'revision' | 'title' | 'cwd' | 'updatedAt' | 'turnId' | 'choicePending' | 'externalOwner' | 'compacting'> & {
+  /** The first background delta may omit status. Unknown must not mean idle. */
+  status?: ThreadView['status']; statusUpdatedAt?: number
   runs?: ThreadView['runs']; choiceId?: string; items?: Item[]
 }
 
@@ -141,6 +148,8 @@ export interface ModelOption {
   id: string
   label: string
   efforts: string[]
+  isDefault?: boolean
+  fastTier?: FastTier
 }
 
 export interface RuntimeStatus {
@@ -151,7 +160,7 @@ export interface RuntimeStatus {
 }
 
 export interface Bootstrap {
-  capabilities?: { pagedHistory?: boolean; diagnostics?: boolean; durableMessages?: boolean; nativeActions?: boolean; mcpElicitation?: boolean; fileReferences: boolean; filePreview?: boolean; imagePreviewExperience?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
+  capabilities?: { settingDefaults?: boolean; teamMode?: boolean; teamPilot?: boolean; pagedHistory?: boolean; diagnostics?: boolean; durableMessages?: boolean; nativeActions?: boolean; mcpElicitation?: boolean; fileReferences: boolean; filePreview?: boolean; imagePreviewExperience?: boolean; externalFileOpening?: boolean; planning?: boolean; goals?: boolean; turnMetrics?: boolean; nativeAsyncQuestions?: boolean; messageEditing?: boolean; clientMessageIds?: boolean; progressStatus?: boolean; turnReconciliation?: boolean; safeAutoRecovery?: boolean; onDemandImages?: boolean; contextDedup?: boolean; contextUsageMenu?: boolean }
   token: string
   root: string
   workspaces: WorkspaceInfo[]
@@ -169,6 +178,7 @@ export interface Bootstrap {
 }
 
 export type StreamEvent =
+  | { type: 'teamChanged'; revision: number; workspaceId?: string }
   | ThreadPatch
   | { type: 'goal'; threadId: string; goal: ThreadGoal | null }
   | { type: 'genui'; threadId: string; panels: GenuiPanelInfo[] }
@@ -178,6 +188,7 @@ export type StreamEvent =
   | { type: 'threads'; threads: ThreadSummary[] }
   | { type: 'workspaces'; workspaces: WorkspaceInfo[] }
   | { type: 'plugins'; plugins: { todoNote: boolean } }
+  | ({ type: 'todoCount' } & TodoCount)
   | { type: 'preferences'; preferences: Preferences; sessionOptions: Record<string, SessionOptions> }
   | { type: 'queue'; queue: QueuedMessage[] }
 

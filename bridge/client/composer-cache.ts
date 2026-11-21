@@ -26,9 +26,10 @@ export function loadComposerCache(storage: Storage): ComposerCache {
       const row = JSON.parse(raw), draft = contents(row)
       result.drafts[key] = draft.text; result.fileDrafts[key] = draft.files; result.skillDrafts[key] = draft.skills; result.referenceDrafts[key] = draft.references
       if (row.editing && typeof row.editing.itemId === 'string' && typeof row.editing.turnId === 'string') result.editingMessages[key] = { itemId: row.editing.itemId, turnId: row.editing.turnId, merged: row.editing.merged === true, saved: contents(row.editing.saved) }
-      if (Array.isArray(row.pending)) for (const pending of row.pending.slice(0, 3)) {
+      if (Array.isArray(row.pending)) for (const pending of row.pending) {
         if (typeof pending.id !== 'string' || pending.key !== key || pending.item?.id !== pending.id || pending.item?.type !== 'userMessage' || typeof pending.item.text !== 'string') continue
-        result.pendingMessages.push({ ...pending, baseline: strings(pending.baseline, 20_000), contents: contents(pending.contents), state: pending.state === 'failed' ? 'failed' : 'unknown', error: pending.state === 'failed' ? pending.error : '页面已恢复，正在核对之前的提交结果。' })
+        const state = ['failed', 'syncing', 'unrecorded'].includes(pending.state) ? pending.state : 'unknown'
+        result.pendingMessages.push({ ...pending, baseline: strings(pending.baseline, 20_000), contents: contents(pending.contents), state })
       }
     } catch { /* One damaged draft must not hide the other conversations. */ }
   }

@@ -1,0 +1,156 @@
+// Deterministic UI and HTTP regression. Real-model acceptance is recorded
+// separately; this fixture never sends work to a production/native session.
+import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { chromium } from 'playwright'
+import { CodexRpc } from '../server/rpc.ts'
+import { Bridge } from '../server/bridge.ts'
+import { Workspace } from '../server/workspace.ts'
+import { createHttpServer } from '../server/http.ts'
+
+const output = resolve('test-results'); await mkdir(output, { recursive: true })
+const root = await mkdtemp(resolve(output, 'team-browser-')), cwd = resolve(root, 'workspace'); await mkdir(cwd)
+const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: resolve(root, 'sessions.json') } })
+const bridge = new Bridge(rpc, new Workspace(cwd), resolve(root, 'home'), resolve(root, 'data'), false, { teamPilot: true })
+const app = createHttpServer({ bridge, dist: resolve(process.env.CWEB_TEST_DIST || 'dist') })
+await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve))
+const browser = await chromium.launch({ executablePath: process.env.BROWSER_EXECUTABLE || '/usr/bin/microsoft-edge', headless: true, ignoreDefaultArgs: ['--headless=old'], args: ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage'] })
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } }), errors = []
+page.on('pageerror', error => errors.push(error.message))
+const base = `http://127.0.0.1:${app.server.address().port}`
+async function until(fn) { const end = Date.now() + 5000; do { if (await fn()) return; await new Promise(resolve => setTimeout(resolve, 25)) } while (Date.now() < end); throw new Error('Timed out') }
+const graph = page.getByRole('region', { name: '团队关系图', exact: true })
+const sidebar = page.locator('.team-approvals')
+async function addMember(name, level, parentId) {
+  await graph.getByRole('button', { name: '成员', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '申请新增团队会话' }); await dialog.waitFor()
+  await dialog.getByRole('textbox', { name: '团队会话名称' }).fill(name)
+  await dialog.getByRole('combobox', { name: '新成员层级' }).selectOption(String(level))
+  if (parentId) await dialog.getByRole('combobox', { name: '新成员直属上级' }).selectOption(parentId)
+  await dialog.getByRole('textbox', { name: '新成员职责' }).fill('仅验证文本协作，不操作文件或硬件')
+  const before = (await bridge.team.snapshot()).members.length
+  await dialog.getByRole('button', { name: '提交成员申请' }).click(); await dialog.waitFor({ state: 'hidden' })
+  assert.equal((await bridge.team.snapshot()).members.length, before, 'Proposal alone cannot create a session')
+  const card = sidebar.locator('.member-request').filter({ has: page.getByRole('heading', { name, exact: true }) })
+  await card.getByRole('button', { name: '批准创建' }).click()
+  await until(async () => (await bridge.team.snapshot()).members.length === before + 1)
+  const member = (await bridge.team.snapshot()).members.at(-1)
+  await page.locator(`.react-flow__node[data-id="${member.threadId}"]`).waitFor()
+  return member
+}
+try {
+  await bridge.updatePreferences({ theme: 'dark' })
+  await page.goto(base + '/?team=1'); await graph.waitFor()
+  await graph.getByRole('button', { name: '开启团队', exact: true }).click()
+  await until(async () => (await bridge.team.snapshot()).enabled)
+  const lead = await addMember('试验-负责人', 1)
+  const manager = await addMember('试验-项目主管', 2, lead.threadId)
+  const worker = await addMember('试验-执行成员', 3, manager.threadId)
+  const managerB = await addMember('试验-视觉主管', 2, lead.threadId)
+  const workerB = await addMember('试验-视觉成员', 3, managerB.threadId)
+  assert.equal(await page.locator('.react-flow__node-member').count(), 5)
+  assert.equal(bridge.threads.get(manager.threadId).items.length, 0)
+  // Node menu, root cannot move down, extra levels and direction editor.
+  const rootNode = page.locator(`.react-flow__node[data-id="${lead.threadId}"]`)
+  await rootNode.click({ button: 'right' })
+  await page.getByRole('menuitem', { name: '设置层级与分组' }).click()
+  const editor = page.getByRole('dialog', { name: '层级与分组' })
+  assert.equal(await editor.getByRole('combobox', { name: '节点层级' }).isDisabled(), true)
+  await editor.getByRole('textbox', { name: '节点名称' }).fill('试验-总负责人')
+  await editor.getByRole('button', { name: '保存设置' }).click(); await editor.waitFor({ state: 'hidden' })
+  assert.equal((await bridge.team.snapshot()).members[0].name, '试验-总负责人')
+  await graph.getByRole('button', { name: '层级', exact: true }).click()
+  await until(async () => (await bridge.team.snapshot()).levels.length === 4)
+  await page.waitForTimeout(200) // React Flow measures new level labels, then fits the canvas.
+  const baseEdge = page.locator('.team-permission-edge').first()
+  const point = await baseEdge.locator('.react-flow__edge-interaction').evaluate(path => { const p = path.getPointAtLength(path.getTotalLength() / 2), screen = new DOMPoint(p.x, p.y).matrixTransform(path.getScreenCTM()); return { x: screen.x, y: screen.y, hit: document.elementFromPoint(screen.x, screen.y)?.outerHTML.slice(0,180) } }); await page.mouse.click(point.x, point.y)
+  const direction = page.getByRole('dialog', { name: '通信方向', exact: true }); await direction.waitFor()
+  await direction.getByRole('combobox', { name: '通信方向' }).selectOption('forward')
+  await direction.getByRole('button', { name: '保存设置' }).click(); await direction.waitFor({ state: 'hidden' })
+  assert.equal((await bridge.team.snapshot()).edges[0].direction, 'forward')
+  // Cross-group arrow from actual dragging, then concise pending review.
+  const source = page.locator(`.react-flow__node[data-id="${worker.threadId}"] .react-flow__handle-right`)
+  const target = page.locator(`.react-flow__node[data-id="${workerB.threadId}"] .react-flow__handle-left`)
+  await source.dragTo(target)
+  await until(async () => (await bridge.team.snapshot()).edges.some(e => e.source === worker.threadId && e.target === workerB.threadId))
+  const first = await bridge.team.propose(worker.threadId, { to: workerB.threadId, kind: 'task', title: '确认识别接口', body: '请确认图像时间戳和目标坐标字段。', requestKey: 'ui-peer' })
+  const firstCard = sidebar.locator(`[data-message-id="${first.id}"]`); await firstCard.waitFor()
+  assert.equal(await firstCard.locator('.team-review-body').isVisible(), true)
+  const traffic = page.locator('.team-traffic-edge'); await traffic.waitFor()
+  assert.match(await traffic.textContent(), /确认识别接口/)
+  await firstCard.getByRole('button', { name: '允许本次' }).click(); await bridge.team.flush()
+  await until(async () => (await bridge.team.snapshot()).messages[0].reviews.every(r => r.state === 'sent'))
+  await page.locator('.team-traffic-edge.flowing').waitFor()
+  assert.equal(bridge.threads.get(workerB.threadId).items.length, 0)
+  await firstCard.getByRole('button', { name: /在关系图定位/ }).click()
+  await until(async () => await page.locator('.team-traffic-edge.focused').count() === 1)
+  await page.screenshot({ path: resolve(output, 'team-graph-desktop.png'), fullPage: true })
+  await firstCard.getByRole('button', { name: '取消未投递请求' }).click()
+  await rpc.call('test/finish', { threadId: manager.threadId }); await rpc.call('test/finish', { threadId: managerB.threadId })
+  // Existing reject/edit/pause/queue behavior remains intact in sidebar.
+  const second = await bridge.team.propose(lead.threadId, { to: manager.threadId, kind: 'task', title: '修改后批准', body: '原始正文', requestKey: 'ui-edit' })
+  const secondCard = sidebar.locator(`[data-message-id="${second.id}"]`); await secondCard.waitFor()
+  await graph.getByRole('button', { name: '暂停通信' }).click()
+  await sidebar.waitFor({ state: 'hidden' })
+  assert.equal((await bridge.team.snapshot()).messages[1].state, 'pending', 'Pausing hides approvals while retaining requests')
+  await rpc.call('turn/start', { threadId: manager.threadId, input: [{ type: 'text', text: '等待审批布局验证' }] })
+  await until(() => bridge.threads.get(manager.threadId)?.status === 'inProgress')
+  await graph.getByRole('button', { name: '开启团队' }).click(); await secondCard.waitFor()
+  await secondCard.getByRole('button', { name: '修改正文' }).click()
+  await secondCard.getByRole('textbox', { name: '调整待发送正文' }).fill('审核修改：计算 7+5')
+  await secondCard.getByRole('button', { name: '修改后允许' }).click()
+  await until(async () => (await bridge.team.snapshot()).messages[1].state === 'waiting')
+  await rpc.call('test/finish', { threadId: manager.threadId }); await bridge.team.flush()
+  await until(async () => (await bridge.team.snapshot()).messages[1].state === 'delivered')
+  assert.match((await bridge.team.snapshot()).messages[1].body, /审核修改/)
+  const third = await bridge.team.propose(lead.threadId, { to: manager.threadId, kind: 'task', title: '拒绝验证', body: '不应送达', requestKey: 'ui-reject' })
+  const thirdCard = sidebar.locator(`[data-message-id="${third.id}"]`); await thirdCard.waitFor()
+  await thirdCard.getByRole('button', { name: '拒绝', exact: true }).click()
+  await until(async () => (await bridge.team.snapshot()).messages[2].state === 'rejected')
+  if (bridge.threads.get(manager.threadId)?.turnId) await rpc.call('test/finish', { threadId: manager.threadId })
+
+  const proposeParallel = (to, title, requestKey) => bridge.team.propose(lead.threadId, { to, kind: 'task', title, body: '等待隔离测试结束', requestKey })
+  const parallelA = await proposeParallel(manager.threadId, '专项甲独立检查', 'ui-parallel-a')
+  const parallelB = await proposeParallel(managerB.threadId, '专项乙独立检查', 'ui-parallel-b')
+  const notSelected = await proposeParallel(manager.threadId, '仍待批准的后续任务', 'ui-parallel-unselected')
+  await sidebar.getByRole('checkbox', { name: '选择任务 专项甲独立检查' }).check()
+  await sidebar.getByRole('checkbox', { name: '选择任务 专项乙独立检查' }).check()
+  await sidebar.getByText('已选 2 项 · 2 个会话', { exact: true }).waitFor()
+  await sidebar.getByRole('button', { name: '批准所选任务', exact: true }).click()
+  await until(async () => {
+    const rows = (await bridge.team.snapshot()).messages
+    return [parallelA, parallelB].every(item => rows.find(row => row.id === item.id).state === 'delivered')
+  })
+  assert.ok([manager, managerB].every(member => bridge.threads.get(member.threadId)?.status === 'inProgress'), 'Independent native turns are running at the same time')
+  assert.equal((await bridge.team.snapshot()).messages.find(row => row.id === notSelected.id).state, 'pending')
+  await rpc.call('test/finish', { threadId: manager.threadId }); await rpc.call('test/finish', { threadId: managerB.threadId })
+
+  await page.reload(); await graph.waitFor(); assert.equal(await page.locator('.react-flow__node-member').count(), 5)
+  await sidebar.getByRole('button', { name: '全部记录' }).click(); await thirdCard.waitFor()
+  await bridge.updatePreferences({ theme: 'light' }); await until(async () => await page.locator('html').getAttribute('data-theme') === 'light')
+  await page.screenshot({ path: resolve(output, 'team-graph-light.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 }); await page.reload(); await graph.waitFor()
+  assert.equal(await sidebar.isVisible(), false, 'Mobile graph is not covered by default')
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+  await page.screenshot({ path: resolve(output, 'team-graph-mobile.png'), fullPage: true })
+  await graph.getByRole('button', { name: /^审批/ }).click(); await sidebar.waitFor()
+  await until(async () => { const b = await sidebar.boundingBox(); return b.x >= 0 && b.x + b.width <= 391 })
+  await page.screenshot({ path: resolve(output, 'team-approvals-mobile.png'), fullPage: true })
+  await page.setViewportSize({ width: 1280, height: 800 }); await page.reload(); await graph.waitFor()
+  await page.locator('.workspace-toggle').first().click({ button: 'right' }); await page.getByRole('menu', { name: '工作区菜单', exact: true }).waitFor()
+  await page.getByRole('menuitemcheckbox', { name: '团队模式' }).click(); await until(async () => !(await bridge.team.snapshot()).enabled)
+  await graph.getByRole('button', { name: '开启团队' }).click(); await until(async () => (await bridge.team.snapshot()).enabled)
+  await page.locator(`.react-flow__node[data-id="${lead.threadId}"]`).dblclick(); await graph.waitFor({ state: 'hidden' })
+  await page.locator('.team-mode-switch').getByRole('button', { name: '团队', exact: true }).click(); await graph.waitFor()
+  await page.locator('.team-mode-switch').getByRole('button', { name: '对话', exact: true }).click(); await graph.waitFor({ state: 'hidden' })
+  // A bounded large-graph check uses fixture members, never 80 real model sessions.
+  for (let i = 0; i < 75; i++) await bridge.team.register({ threadId: `stress-${i}`, name: `容量测试 ${i + 1}`, role: 'worker', parentId: manager.threadId, cwd })
+  await page.locator('.team-mode-switch').getByRole('button', { name: '团队', exact: true }).click(); await graph.waitFor()
+  await until(async () => (await graph.locator('.team-graph-header').textContent()).includes('80 个会话'))
+  await until(async () => { const n = await page.locator('.react-flow__node-member').count(); return n > 0 && n < 80 })
+  console.log('80-member fixture: visible member DOM nodes', await page.locator('.react-flow__node-member').count())
+  assert.deepEqual(errors, [])
+  console.log('Team graph UI passed: approved creation, levels, node menu, directed edges, drag connection, live routes, dual-review waiting, edit/pause/delivery/reject, persisted history, light/dark and mobile.')
+} catch (error) { await page.screenshot({ path: resolve(output, 'team-failure.png'), fullPage: true }).catch(() => {}); throw error }
+finally { await browser.close(); await app.close(); await rm(root, { recursive: true, force: true }) }

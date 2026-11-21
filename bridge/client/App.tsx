@@ -1,5 +1,8 @@
+import { describeModel } from '../shared/activity.ts'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties } from 'react'
 import type { ActivityView } from '../shared/types.ts'
+import { todoCountEvent } from '../shared/todo-count.ts'
+import { withModelDefaults } from '../shared/session-options.ts'
 import { observeActivity, retainThreadViews } from './view-cache.ts'
 import { Archive, ArrowDown, ArrowRight, ArrowUp, Check, ChevronDown, Code2, Command, FileSearch, Folder, GitBranch, Upload, RefreshCw, Braces, SquareTerminal, LoaderCircle, Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Plus, Search, Settings, Settings2, ShieldCheck, Sparkles, Square, Sun, X } from 'lucide-react'
 import { defaultPreferences, type Approval, type Bootstrap, type WorkspaceInfo, type RuntimeStatus, type StreamEvent, type ThreadSummary, type ThreadView, type Preferences, type SessionOptions, type AttachmentInfo, type SkillInfo, type QueuedMessage, type GenuiPanelInfo, type ThreadGoal, type Item } from '../shared/types.ts'
@@ -7,7 +10,13 @@ import { api, message, setToken, upload, ApiError, uncertainSubmission } from '.
 import { ApprovalStack, IconButton, Notice, TranscriptItem } from './components.tsx'
 
 import { WorkspaceGroups, WorkspaceHome, workspaceFor } from './Workspaces.tsx'
-import { Inspector } from './Inspector.tsx'
+import { Inspector, type InspectorTab } from './Inspector.tsx'
+import { useTeam } from './useTeam.ts'
+import { TeamApprovals } from './TeamApprovals.tsx'
+import { TeamQueue } from './TeamQueue.tsx'
+import { WorkspaceMenu, type WorkspaceMenuTarget } from './WorkspaceMenu.tsx'
+import { TeamAvailabilityDialog } from './TeamAvailabilityDialog.tsx'
+import { compatiblePreferences, compatiblePreferencePatch, pendingTodoLayout, rememberPreferenceWrite } from './preference-compat.ts'
 import { DirectoryPicker } from './DirectoryPicker.tsx'
 import { BrandMark } from './BrandMark.tsx'
 import { Composer } from './Composer.tsx'
@@ -41,6 +50,8 @@ import { deferredPanel } from './deferred-panel.tsx'
 // Connection/settings remain in the entry module so diagnostics can still open
 // when the bridge becomes unreachable before their first visit.
 const TodoNote = deferredPanel<ComponentProps<typeof import('./TodoNote.tsx')['TodoNote']>>('待办便签', async () => ({ default: (await import('./TodoNote.tsx')).TodoNote }))
+
+const TeamGraph = deferredPanel<ComponentProps<typeof import('./TeamGraph.tsx')['TeamGraph']>>('团队关系图', async () => ({ default: (await import('./TeamGraph.tsx')).TeamGraph }))
 
 const starters = [
   { icon: <FileSearch size={19} />, title: '读懂这个项目', detail: '梳理结构，找到关键入口', prompt: '请先只读检查这个项目，介绍目录结构、主要技术和运行方式。' },
@@ -86,6 +97,12 @@ export function App() {
   const [historyNavigation, setHistoryNavigation] = useState(false); const jumpSequence = useRef(0)
   const goalPanel = useRef<GoalPanelHandle>(null); const [goalUpdate, setGoalUpdate] = useState<{ threadId: string; goal: ThreadGoal | null }>()
   const [drafts, setDrafts] = useState<Record<string, string>>(initialComposer.drafts)
+  const [teamOpen, setTeamOpen] = useState(new URLSearchParams(window.location.search).get('team') === '1')
+  const teamAvailable = Boolean(boot?.capabilities?.teamMode || boot?.capabilities?.teamPilot)
+  const [teamUnavailable, setTeamUnavailable] = useState(false)
+  const [teamFocus, setTeamFocus] = useState<string>()
+  const [workspaceMenu, setWorkspaceMenu] = useState<WorkspaceMenuTarget | null>(null)
+  const teamVisible = teamAvailable && teamOpen
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
@@ -128,8 +145,9 @@ export function App() {
   const [mobile, setMobile] = useState(() => matchMedia('(max-width: 760px)').matches)
   const [sidebarWidth, setSidebarWidth] = useState(() => Math.max(210, Math.min(420, Number(localValue('cweb:sidebar-width', '276')) || 276)))
   const sidebarDrag = useRef(false)
-  useEffect(() => { const query = matchMedia('(max-width: 760px)'); const update = () => { setMobile(query.matches); setSidebar(false) }; query.addEventListener('change', update); return () => query.removeEventListener('change', update) }, [])
+  useEffect(() => { const query = matchMedia('(max-width: 760px)'); const update = () => { setMobile(query.matches); setSidebar(false); if (query.matches) setInspector(false) }; query.addEventListener('change', update); return () => query.removeEventListener('change', update) }, [])
   const [inspector, setInspector] = useState(false)
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('todo')
   const [settings, setSettings] = useState(loadingPreviewEntry)
   const [workspaceDialog, setWorkspaceDialog] = useState(false)
   const [renameDialog, setRenameDialog] = useState<string | null>(null)
@@ -148,6 +166,8 @@ export function App() {
   const [pluginEnabled, setPluginEnabled] = useState(true)
   const [pluginSaving, setPluginSaving] = useState(false)
   const [prefs, setPrefs] = useState<Preferences>(defaultPreferences)
+  const nativeTodoLayout = useRef(false)
+  function receivedPreferences(value: Preferences) { nativeTodoLayout.current = Boolean(value?.todoPlacement); return compatiblePreferences(value) }
   const [sessionOptions, setSessionOptions] = useState<Record<string, SessionOptions>>({})
   const [optionDrafts, setOptionDrafts] = useState<Record<string, SessionOptions>>({})
   const [fileDrafts, setFileDrafts] = useState<Record<string, AttachmentInfo[]>>(initialComposer.fileDrafts)
@@ -201,7 +221,7 @@ export function App() {
   const transcriptContent = useRef<HTMLDivElement>(null)
   const composerDock = useRef<HTMLDivElement>(null)
   const follow = useRef(true)
-  const { away: awayFromBottom, jump: jumpToBottom, pause: pauseFollowing } = useConversationScroll(transcript, transcriptContent, follow, selected || `new:${workspaceId || ''}`, composerDock)
+  const { away: awayFromBottom, jump: jumpToBottom, pause: pauseFollowing } = useConversationScroll(transcript, transcriptContent, follow, selected || `new:${workspaceId || ''}`, composerDock, !teamVisible)
   const showLatest = useCallback(() => { setHistoryNavigation(false); setJumpTarget({ id: '', seq: ++jumpSequence.current }); jumpToBottom() }, [jumpToBottom])
   const navigateMessage = useCallback((id: string) => { pauseFollowing(); setHistoryNavigation(true); setJumpTarget({ id, seq: ++jumpSequence.current }) }, [pauseFollowing])
   useEffect(() => { setHistoryNavigation(false); setJumpTarget(null) }, [selected])
@@ -212,6 +232,10 @@ export function App() {
   const selectedSummary = selected ? threads.find(row => row.id === selected) : undefined
   const loadingThread = Boolean(selected && !thread && threadLoadError?.id !== selected)
   const activeWorkspace = workspaceFor(workspaces, thread?.cwd || selectedSummary?.cwd || '') || workspaces.find(row => row.id === workspaceId)
+  const team = useTeam(teamAvailable, activeWorkspace?.id, Boolean(boot?.capabilities?.teamPilot))
+  const menuTeam = team.pilot ? team.state : team.workspaces.find(workspace => workspace.id === workspaceMenu?.workspaceId)
+  useEffect(() => { setTeamFocus(undefined) }, [activeWorkspace?.id])
+  useEffect(() => { if (workspaceMenu) void team.loadIndex() }, [workspaceMenu?.workspaceId, team.loadIndex])
   const activeCwd = thread?.cwd || selectedSummary?.cwd || activeWorkspace?.path || ''
   const home = !selected && !activeWorkspace
   const draftKey = selected || `new:${workspaceId || ''}`
@@ -224,7 +248,8 @@ export function App() {
     if (!document.activeElement || document.activeElement === document.body) { composer.current?.focus(); composer.current?.setSelectionRange(restore.start, restore.end) }
   }, [draftKey])
   const editing = editingMessages[draftKey]
-  const pendingMessage = useMemo(() => pendingMessages.find(row => row.key === draftKey && !echoedMessage(row, thread)), [pendingMessages, draftKey, thread])
+  const currentDeliveries = useMemo(() => pendingMessages.filter(row => row.key === draftKey && !echoedMessage(row, thread)), [pendingMessages, draftKey, thread])
+  const pendingMessage = currentDeliveries.find(row => row.state !== 'unrecorded')
   const displayedThread = useMemo(() => withPendingMessage(thread, pendingMessage), [thread, pendingMessage])
   useEffect(() => { setPendingMessages(previous => previous.some(row => echoedMessage(row, views[row.key])) ? previous.filter(row => !echoedMessage(row, views[row.key])) : previous) }, [views])
   const running = isThreadRunning(thread)
@@ -241,7 +266,14 @@ export function App() {
     return () => { cancelled = true }
   }, [boot, activeWorkspace?.id, skillsRevision, settings, draft.startsWith('/')])
 
-  const currentOptions = optionDrafts[draftKey] || (selected ? sessionOptions[selected] : undefined) || { model: prefs.model, effort: prefs.effort, mode: prefs.mode, approvalPolicy: prefs.approvalPolicy }
+  const currentOptions = optionDrafts[draftKey] || (selected ? sessionOptions[selected] : undefined) || { model: '', effort: '', mode: prefs.mode, approvalPolicy: prefs.approvalPolicy }
+  const resolvedOptions = withModelDefaults(currentOptions, prefs)
+  const activeModel = resolvedOptions.model || thread?.model || boot?.models.find(model => model.isDefault)?.id
+  const modelFastTier = boot?.models.find(model => model.id === activeModel)?.fastTier
+  const requestOptions = {
+    ...(boot?.capabilities?.settingDefaults ? currentOptions : resolvedOptions),
+    ...(currentOptions.serviceTier && currentOptions.serviceTier !== 'default' && currentOptions.serviceTier !== modelFastTier ? { serviceTier: '' as const } : {}),
+  }
   const files = fileDrafts[draftKey] || []; const skills = skillDrafts[draftKey] || []
   const references = referenceDrafts[draftKey] || []
   const editorContext = useRef({ draftKey, draft, files, skills, references, availableSkills, canEdit: false, externalOwner: false })
@@ -300,10 +332,11 @@ export function App() {
         updateViews(previous => Object.fromEntries(Object.entries(previous).map(([id, view]) => [id, { ...view, revision: -1 }])))
         setActivityViews(previous => Object.fromEntries(Object.entries(previous).map(([id, view]) => [id, { ...view, revision: -1 }])))
       }
-      setToken(value.token); setError(''); setBoot(value); setRuntime(value.runtime); setThreads(value.threads)
-      if (!pendingPrefs.current) setPrefs(value.preferences || defaultPreferences)
+      setToken(value.token); setError(''); setBoot({ ...value, models: value.models.map(model => ({ ...model, label: describeModel(model.label || model.id) })) }); setRuntime(value.runtime); setThreads(value.threads)
+      const nextPreferences = receivedPreferences(value.preferences)
+      if (!pendingPrefs.current) setPrefs(nextPreferences)
       setSessionOptions(value.sessionOptions || {}); setQueue(value.queue || [])
-      if (!booted.current) setInspector(value.preferences?.showInspector ?? false)
+      if (!booted.current) setInspector(nextPreferences.showInspector && matchMedia('(min-width: 1181px)').matches)
       setWorkspaces(value.workspaces || []); setPluginEnabled(value.plugins?.todoNote ?? true)
       const previous = localValue('cweb:thread', localValue('dsh-local-thread', ''))
       if (!booted.current && previous && restoreEligible.current) {
@@ -358,10 +391,12 @@ export function App() {
           }
         }
         else if (value.type === 'approvals') setApprovals(value.approvals)
+        else if (value.type === 'teamChanged') window.dispatchEvent(new CustomEvent('cweb:team-changed', { detail: { workspaceId: value.workspaceId } }))
         else if (value.type === 'runtime') { setRuntime(value.runtime); if (value.runtime.state === 'failed') scheduleReconnect() }
         else if (value.type === 'workspaces') setWorkspaces(value.workspaces)
         else if (value.type === 'plugins') setPluginEnabled(value.plugins.todoNote)
-        else if (value.type === 'preferences') { if (!pendingPrefs.current) setPrefs(value.preferences); setSessionOptions(value.sessionOptions) }
+        else if (value.type === 'todoCount') window.dispatchEvent(new CustomEvent(todoCountEvent, { detail: value }))
+        else if (value.type === 'preferences') { if (!pendingPrefs.current) setPrefs(receivedPreferences(value.preferences)); setSessionOptions(value.sessionOptions) }
         else if (value.type === 'queue') setQueue(value.queue)
         else if (value.type === 'goal' && value.threadId === selectedRef.current) setGoalUpdate(value)
         else if (value.type === 'genui' && value.threadId === selectedRef.current) { setGenuiPanels(value.panels); if ((value.panels.at(-1)?.spec as { panel?: boolean } | undefined)?.panel) { setGenuiOpen(true); setInspector(false) } }
@@ -410,8 +445,8 @@ export function App() {
       else if (mod && key === '/') { event.preventDefault(); openSettings('shortcuts') }
       else if (mod && key === 'o') { event.preventDefault(); if (inComposer) void copyReply(); else addWorkspaceDialog() }
       else if (mod && key === 'r' && inComposer) { event.preventDefault(); setPalette('history') }
-      else if (event.ctrlKey && key === 'c' && (inComposer || document.activeElement === document.body) && running && !window.getSelection()?.toString() && (!inComposer || composer.current?.selectionStart === composer.current?.selectionEnd)) { event.preventDefault(); void interrupt() }
-      else if (event.key === 'Escape') { setSidebar(false); if (inComposer && running && !draft) { event.preventDefault(); void interrupt() } }
+      else if (event.ctrlKey && key === 'c' && (inComposer || document.activeElement === document.body) && running && !thread?.externalOwner && !window.getSelection()?.toString() && (!inComposer || composer.current?.selectionStart === composer.current?.selectionEnd)) { event.preventDefault(); void interrupt() }
+      else if (event.key === 'Escape') { setSidebar(false); if (inComposer && running && !thread?.externalOwner && !draft) { event.preventDefault(); void interrupt() } }
     }
     window.addEventListener('keydown', listener); return () => window.removeEventListener('keydown', listener)
   })
@@ -425,7 +460,7 @@ export function App() {
       try {
         const list = await api<ThreadSummary[]>('/threads')
         if (!cancelled) setThreads(list)
-        if (selected && !running && (thread?.externalOwner || list.some(row => row.id === selected && row.updatedAt !== thread?.updatedAt))) {
+        if (selected && (thread?.externalOwner || !running && list.some(row => row.id === selected && row.updatedAt !== thread?.updatedAt))) {
           const value = await api<ThreadView>(`/threads/${encodeURIComponent(selected)}`)
           if (!cancelled) updateViews(previous => mergeView(previous, value))
         }
@@ -438,7 +473,7 @@ export function App() {
   }, [boot, selected, running, thread?.updatedAt, thread?.externalOwner])
 
   const genuiCurrent = useRef({ selected, currentOptions, busy, connected, running })
-  genuiCurrent.current = { selected, currentOptions, busy, connected, running }
+  genuiCurrent.current = { selected, currentOptions: requestOptions, busy, connected, running }
   const genuiAction = useCallback(async (action: string, payload: Record<string, unknown>) => {
     if (action === 'cweb:loading-style-picker') { openSettings('appearance', true); return }
     const current = genuiCurrent.current
@@ -499,19 +534,27 @@ export function App() {
     return () => { cancelled = true; clearInterval(timer) }
   }, [selected, thread?.todoTools, running, connected, pluginEnabled])
 
-  async function updatePreferences(patch: Partial<Preferences>) {
+  useEffect(() => {
+    const pending = pendingTodoLayout()
+    if (boot?.preferences?.todoPlacement && pending) void updatePreferences(pending, false).catch(error => setToast(message(error)))
+  }, [boot?.token, boot?.preferences?.todoPlacement])
+
+  async function updatePreferences(patch: Partial<Preferences>, reveal = true) {
     setPrefs(value => ({ ...value, ...patch })); pendingPrefs.current++
     const work = prefWrites.current.catch(() => {}).then(async () => {
       try {
-        const value = await api<{ preferences: Preferences; sessionOptions: Record<string, SessionOptions> }>('/preferences', patch)
-        if (pendingPrefs.current === 1) setPrefs(value.preferences)
+        const value = await api<{ preferences: Preferences; sessionOptions: Record<string, SessionOptions> }>('/preferences', compatiblePreferencePatch(patch, nativeTodoLayout.current))
+        rememberPreferenceWrite(value.preferences, patch)
+        if (pendingPrefs.current === 1) setPrefs(receivedPreferences(value.preferences))
         setSessionOptions(value.sessionOptions)
       } catch (error) {
-        if (pendingPrefs.current === 1) { const snapshot = await api<{ preferences: Preferences }>('/preferences').catch(() => null); if (snapshot) setPrefs(snapshot.preferences) }
+        if (pendingPrefs.current === 1) { const snapshot = await api<{ preferences: Preferences }>('/preferences').catch(() => null); if (snapshot) setPrefs(receivedPreferences(snapshot.preferences)) }
         throw error
       } finally { pendingPrefs.current-- }
     })
     prefWrites.current = work; await work
+    if (reveal && patch.todoPlacement === 'sidebar') { setInspectorTab('todo'); setGenuiOpen(false); setInspector(true) }
+    else if (reveal && patch.todoPlacement === 'floating' && inspectorTab === 'todo') setInspector(false)
   }
   function changeOptions(patch: Partial<SessionOptions>) {
     setOptionDrafts(previous => ({ ...previous, [draftKey]: { ...(previous[draftKey] || currentOptions), ...patch } }))
@@ -519,7 +562,8 @@ export function App() {
       const threadId = selected
       optionWrites.current = optionWrites.current.catch(() => {}).then(async () => { await api(`/threads/${encodeURIComponent(threadId)}/options`, patch) }).catch(error => setError(message(error)))
     }
-    if (running && (patch.model !== undefined || patch.effort !== undefined)) setToast('模型设置已更新，将从下一轮生效')
+    if (running && patch.serviceTier !== undefined) setToast('速度将在下一轮生效')
+    else if (running && (patch.model !== undefined || patch.effort !== undefined)) setToast('模型设置已更新，将从下一轮生效')
   }
   function openSettings(tab: SettingsTab, focusLoading = false) { setLoadingFocus(focusLoading); setSettingsTab(tab); setSettings(true) }
   async function copyReply() {
@@ -529,7 +573,10 @@ export function App() {
   }
   async function terminalResume(id = selected) {
     if (!id) return
-    try { await api(`/threads/${encodeURIComponent(id)}/release`, {}); await navigator.clipboard.writeText(`codex resume ${id}`); setToast('已复制终端继续命令') }
+    try {
+      const result = await api<{ command?: string }>(`/threads/${encodeURIComponent(id)}/release`, {})
+      await navigator.clipboard.writeText(result.command || `codex resume ${id}`); setToast('已复制终端继续命令')
+    }
     catch (error) { setToast(message(error)) }
   }
   async function selectSkills() {
@@ -582,7 +629,7 @@ export function App() {
     else if (id === '/new') newThread()
     else if (id === '/resume') setPalette('threads')
     else if (id === '/folder') addWorkspaceDialog()
-    else if (id === '/files') setInspector(true)
+    else if (id === '/files') { setInspectorTab('files'); setGenuiOpen(false); setInspector(true) }
     else if (id === '/copy') void copyReply()
     else if (id === '/stop') void interrupt()
     else if (id === '/archive') void archive()
@@ -607,6 +654,7 @@ export function App() {
 
   function closeDialogs() { if (settings || workspaceDialog || renameDialog) dialogExit.exit() }
   function newThread(id: string | null = activeWorkspace?.id || null) {
+    setTeamOpen(false)
     cancelPendingRestore()
     setWorkspaceId(id)
     setSelected(null); setSidebar(false); setError(''); follow.current = true
@@ -622,43 +670,63 @@ export function App() {
     setPendingMessages(previous => previous.filter(row => row.key !== draftKey || !row.editTurnId))
     composer.current?.focus()
   }
-  async function checkDelivery(pending: PendingMessage) {
-    if (!boot?.capabilities?.durableMessages || pending.key.startsWith('new:') || checkingDelivery.current.has(pending.id)) return
+  async function checkDelivery(pending: PendingMessage, manual = false) {
+    if (pending.key.startsWith('new:') || checkingDelivery.current.has(pending.id)) return
     checkingDelivery.current.add(pending.id)
     try {
-      const receipt = await api<{ state: 'accepted' | 'unknown' | 'rejected'; queued?: boolean }>(`/threads/${encodeURIComponent(pending.key)}/delivery/${pending.id}`)
-      if (receipt.state === 'accepted') {
-        const view = await api<ThreadView>(`/threads/${encodeURIComponent(pending.key)}`)
-        updateViews(previous => mergeView(previous, view))
-        setPendingMessages(previous => receipt.queued || echoedMessage(pending, view) ? previous.filter(row => row.id !== pending.id) : previous.map(row => row.id === pending.id && row.state !== 'syncing' ? { ...row, state: 'syncing', error: undefined } : row))
-      } else if (receipt.state === 'rejected') setPendingMessages(previous => previous.map(row => row.id === pending.id ? { ...row, state: 'failed', error: '服务已拒绝该提交，可以恢复草稿。' } : row))
-    } catch { /* A failed read is not evidence that the submitted task failed. */ }
+      const url = `/threads/${encodeURIComponent(pending.key)}`
+      if (pending.state === 'unknown' && boot?.capabilities?.durableMessages) {
+        const receipt = await api<{ state: 'accepted' | 'unknown' | 'rejected'; queued?: boolean }>(`${url}/delivery/${pending.id}`)
+        if (receipt.queued) { dismissDelivery(pending.id); return }
+        if (receipt.state === 'rejected') {
+          setPendingMessages(previous => previous.map(row => row.id === pending.id ? { ...row, state: 'failed', error: '服务已拒绝这条消息。' } : row))
+          return
+        }
+        if (receipt.state === 'unknown') {
+          if (manual) setToast('还未确认这条消息是否送达。')
+          return
+        }
+        setPendingMessages(previous => previous.map(row => row.id === pending.id ? { ...row, state: 'syncing', error: undefined } : row))
+      } else if (pending.state !== 'syncing' && pending.state !== 'unrecorded') return
+      const view = await api<ThreadView>(url)
+      const known = viewsRef.current[pending.key]
+      const latest = known && known.revision > view.revision ? known : view
+      updateViews(previous => mergeView(previous, view))
+      if (echoedMessage(pending, latest)) dismissDelivery(pending.id)
+      else if (!latest.turnId && latest.status !== 'inProgress' && !latest.externalOwner) {
+        // A submission acknowledgement can precede a turn ending without ever
+        // adding the supplemental message to history. Keep the draft available.
+        if (pending.state !== 'unrecorded') setPendingMessages(previous => previous.map(row => row.id === pending.id ? { ...row, state: 'unrecorded', error: undefined } : row))
+        if (manual) setToast('对话记录里仍没有这条消息。')
+      } else if (manual) setToast('会话正在运行，稍后可再查看发送状态。')
+    } catch { if (manual) setToast('暂时无法检查发送状态，请稍后再试。') }
     finally { checkingDelivery.current.delete(pending.id) }
   }
   useEffect(() => {
-    if (!connected || !pendingMessage || !boot?.capabilities?.durableMessages) return
+    if (!connected || !pendingMessage || pendingMessage.state !== 'syncing' && (pendingMessage.state !== 'unknown' || !boot?.capabilities?.durableMessages)) return
     let cancelled = false, attempts = 0
     let timer: ReturnType<typeof setTimeout>
     const check = async () => { await checkDelivery(pendingMessage); if (!cancelled && ++attempts < 4) timer = setTimeout(() => void check(), Math.min(20_000, 3000 * 2 ** attempts)) }
     timer = setTimeout(() => void check(), 3000)
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [connected, pendingMessage?.id, boot?.capabilities?.durableMessages])
+  }, [connected, pendingMessage?.id, pendingMessage?.state, running, thread?.externalOwner, boot?.capabilities?.durableMessages])
+  function dismissDelivery(id: string) { setPendingMessages(previous => previous.filter(row => row.id !== id)) }
   function recoverMessage(pending: PendingMessage) {
     if (busy) return
-    if (pending.state === 'unknown' && !window.confirm('提交结果尚未确认，任务可能已执行。恢复草稿不会撤销原任务；再次发送可能重复执行。仍然恢复为草稿？')) return
+    if (pending.state !== 'failed' && !window.confirm('这条消息可能已被处理。恢复草稿只会把原文放回输入框，再次发送可能重复执行。要恢复吗？')) return
     const saved = pending.contents
     setDrafts(previous => ({ ...previous, [pending.key]: previous[pending.key] ? `${saved.text}\n\n${previous[pending.key]}` : saved.text }))
     setFileDrafts(previous => ({ ...previous, [pending.key]: [...new Map([...saved.files, ...(previous[pending.key] || [])].map(file => [file.id, file])).values()] }))
     setSkillDrafts(previous => ({ ...previous, [pending.key]: [...new Map([...saved.skills, ...(previous[pending.key] || [])].map(skill => [skill.path, skill])).values()] }))
     setReferenceDrafts(previous => ({ ...previous, [pending.key]: [...new Set([...saved.references, ...(previous[pending.key] || [])])] }))
-    setPendingMessages(previous => previous.filter(row => row.id !== pending.id)); setError(''); composer.current?.focus()
+    dismissDelivery(pending.id); setError(''); composer.current?.focus()
   }
   function changeLoadingStyle(value: RunningStyle) {
     setLoadingStyle(value)
     try { localStorage.setItem('cweb:loading-style', value) } catch { setToast('本次选择已生效，浏览器未能保存设置') }
   }
   function addWorkspaceDialog() { setError(''); setDirectoryDraft(''); setNameDraft(''); setWorkspaceEditing(null); setWorkspaceDialog(true) }
-  function chooseThread(id: string) { cancelPendingRestore(); window.dispatchEvent(new CustomEvent(threadReadEvent, { detail: id })); setWorkspaceId(workspaceFor(workspaces, threads.find(row => row.id === id)?.cwd || '')?.id || null); setSelected(id); setSidebar(false); setError('') }
+  function chooseThread(id: string) { setTeamOpen(false); cancelPendingRestore(); window.dispatchEvent(new CustomEvent(threadReadEvent, { detail: id })); setWorkspaceId(workspaceFor(workspaces, threads.find(row => row.id === id)?.cwd || '')?.id || null); setSelected(id); setSidebar(false); setError('') }
 
   async function submit(queued = false) {
     if ((!draft.trim() && !files.length && !skills.length && !references.length) || busy || sending.current || pendingMessage || !connected || !activeWorkspace || uploads[draftKey] || thread?.externalOwner) return
@@ -684,7 +752,7 @@ export function App() {
       showLatest()
       await optionWrites.current
       if (!target) {
-        const created = await api<ThreadView>('/threads', { cwd: activeCwd, model: currentOptions.model })
+        const created = await api<ThreadView>('/threads', { cwd: activeCwd, model: requestOptions.model })
         const focusedInput = document.activeElement === composer.current
         const selection = composer.current ? [composer.current.selectionStart, composer.current.selectionEnd] : null
         target = created.id; updateViews(previous => mergeView(previous, created))
@@ -698,7 +766,7 @@ export function App() {
         setOptionDrafts(previous => ({ ...previous, [created.id]: currentOptions }))
       }
       const isQueued = !editing && (queued || planPrompt) && running
-      const payload = { text, ...currentOptions, ...(planPrompt ? { collaborationMode: 'plan' as const } : {}), attachments: files.map(file => file.id), skills: skills.map(skill => skill.path), steer: Boolean(!editing && running && !queued && !planPrompt), ...(boot?.capabilities?.clientMessageIds ? { clientMessageId: optimistic.id } : {}) }
+      const payload = { text, ...requestOptions, ...(planPrompt ? { collaborationMode: 'plan' as const } : {}), attachments: files.map(file => file.id), skills: skills.map(skill => skill.path), steer: Boolean(!editing && running && !queued && !planPrompt), ...(boot?.capabilities?.clientMessageIds ? { clientMessageId: optimistic.id } : {}) }
       let result: { thread?: ThreadView }
       try { result = await api(`/threads/${encodeURIComponent(target)}/${editing ? 'edit' : isQueued ? 'queue' : 'message'}`, editing ? { itemId: editing.itemId, turnId: editing.turnId, message: payload } : payload) }
       catch (error) { if (error instanceof ApiError && error.code === 'NOT_RUNNING') result = await api(`/threads/${encodeURIComponent(target)}/message`, { ...payload, steer: false }); else throw error }
@@ -722,19 +790,19 @@ export function App() {
   }
 
   async function interrupt() {
-    if (!selected) return
+    if (!selected || thread?.externalOwner) return
     try { await api(`/threads/${encodeURIComponent(selected)}/interrupt`, {}) }
     catch (error) { setError(message(error)) }
   }
   async function ensureGoalThread() {
     if (selectedRef.current) return selectedRef.current
     if (!activeWorkspace || busy) throw new Error('请先选择工作区，并等待消息提交完成。')
-    const created = await api<ThreadView>('/threads', { cwd: activeCwd, model: currentOptions.model })
+    const created = await api<ThreadView>('/threads', { cwd: activeCwd, model: requestOptions.model })
     updateViews(previous => mergeView(previous, created)); setSelected(created.id); setOptionDrafts(previous => ({ ...previous, [created.id]: currentOptions })); return created.id
   }
   async function startGoal(id: string, objective: string) {
     await optionWrites.current
-    const options = { ...currentOptions, ...(currentOptions.collaborationMode === 'plan' ? { collaborationMode: 'default' as const } : {}) }
+    const options = { ...requestOptions, ...(currentOptions.collaborationMode === 'plan' ? { collaborationMode: 'default' as const } : {}) }
     const snapshot = await api<ThreadView>(`/threads/${encodeURIComponent(id)}/snapshot`)
     if (snapshot.turnId) {
       // A native goal can resume before the HTTP reply. Queue only when the user
@@ -816,8 +884,25 @@ export function App() {
     setReferenceDrafts(previous => ({ ...previous, [key]: [...new Set([...(previous[key] || []), path])].slice(0, 20) }))
     requestAnimationFrame(() => composer.current?.focus())
   }, [])
+  function openTeamApprovals() { if (!team.state?.enabled) { setToast('开启团队模式后可查看和处理审批，已有请求会保留'); return }; setInspectorTab('team'); setGenuiOpen(false); setInspector(true) }
+  const reviewQueuedCommunication = useCallback((id: string) => {
+    if (!team.state?.enabled) return
+    setTeamFocus(id); setInspectorTab('team'); setGenuiOpen(false); setInspector(true)
+  }, [team.state?.enabled])
+  const combineQueuedCommunication = useCallback(async (threadId: string, firstId: string) => {
+    if (await team.act('/team/queue/batch', { threadId, firstId })) setToast('已安排合并投递，等待会话空闲')
+    else { setToast('未能安排合并，请查看最新排队状态'); void team.load() }
+  }, [team.act, team.load])
+  function openTeam(workspace?: WorkspaceInfo) { if (!workspace) return; cancelPendingRestore(); if (!teamAvailable) { setTeamUnavailable(true); return }; if (activeWorkspace?.id !== workspace.id) newThread(workspace.id); setTeamOpen(true); setInspectorTab('team'); setGenuiOpen(false); setInspector(!mobile); setSidebar(false) }
+  function locateTeamMessage(id: string) { setTeamFocus(id); openTeam(activeWorkspace || workspaces[0]); openTeamApprovals() }
+  useEffect(() => { if (teamVisible) { setInspectorTab('team'); setGenuiOpen(false); setInspector(!mobile) } }, [teamVisible])
+  useEffect(() => { if (teamVisible && workspaces.length && !activeWorkspace) setWorkspaceId(workspaces[0].id) }, [teamVisible, workspaces, activeWorkspace])
   const closeInspector = inspectorExit.exit
   const closeGenui = genuiExit.exit
+  const todoInSidebar = pluginEnabled && (prefs.todoPlacement || 'sidebar') === 'sidebar'
+  const todoRunning = running && !currentApprovals.length && !thread?.choicePending
+  const todoPanel = useMemo(() => pluginEnabled && selected && !loadingThread ? <TodoNote sessionId={selected} send={pluginSend} linkPending={todoLinkPending} running={todoRunning} layout={prefs.todoPlacement || 'sidebar'} /> : null,
+    [pluginEnabled, selected, loadingThread, pluginSend, todoLinkPending, todoRunning, prefs.todoPlacement])
   function toggleInspector() { if (inspector) closeInspector(); else if (genuiOpen) genuiExit.exit(() => { setGenuiOpen(false); setInspector(true) }); else setInspector(true) }
   async function togglePlugin(enabled: boolean) {
     const previous = pluginEnabled
@@ -841,48 +926,59 @@ export function App() {
       <button className={`workspace-picker ${home ? 'active' : ''}`} disabled={busy} onClick={() => newThread(null)}><Folder size={16} /><span>所有工作区</span><span className="workspace-count">{workspaces.length}</span></button>
       <div className="search"><button type="button" className="search-switch" aria-label="快速切换会话" title="快速切换会话 · Ctrl / ⌘ Alt K" onClick={() => setPalette('threads')}><Search size={15} /></button><input aria-label="搜索会话" placeholder="搜索工作区或会话…" value={search} onChange={event => setSearch(event.target.value)} /></div>
       <div className="section-label">工作区与会话 <IconButton label="添加工作区" onClick={addWorkspaceDialog}><Plus size={15} /></IconButton></div>
-      <WorkspaceGroups workspaceId={activeWorkspace?.id} workspaces={workspaces} threads={threads} views={activityViews} approvals={approvals} selected={selected} reveal={revealThread} busy={busy} search={search} menuThreadId={threadMenu?.threadId} onThreadMenu={openThreadMenu} onChoose={chooseThread} onNew={newThread} onRename={workspace => { setWorkspaceEditing(workspace.id); setNameDraft(workspace.name); setWorkspaceDialog(true) }} />
-      <div className="sidebar-bottom"><button type="button" className="local-status" aria-label="查看连接与诊断" onClick={() => openSettings('connection')}><span className={`status-dot ${connected ? '' : 'offline'}`} /><span>{connected ? '本地引擎已连接' : runtime.state === 'starting' ? '正在连接本地引擎' : '本地引擎未连接'}</span><ShieldCheck size={13} /></button><div className="sidebar-actions"><UsagePopover /><div className="sidebar-utilities"><IconButton label="连接与设置" className="settings-trigger" onClick={() => openSettings('general')}><Settings size={17} /></IconButton><IconButton label={theme === 'light' ? '切换深色主题' : '切换浅色主题'} onClick={() => void updatePreferences({ theme: theme === 'light' ? 'dark' : 'light' }).catch(error => setError(message(error)))}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</IconButton></div></div></div>
+      <WorkspaceGroups workspaceId={activeWorkspace?.id} workspaces={workspaces} threads={threads} views={activityViews} approvals={approvals} selected={selected} reveal={revealThread} busy={busy} search={search} menuThreadId={threadMenu?.threadId} onThreadMenu={openThreadMenu} onWorkspaceMenu={setWorkspaceMenu} onChoose={chooseThread} onNew={newThread} onRename={workspace => { setWorkspaceEditing(workspace.id); setNameDraft(workspace.name); setWorkspaceDialog(true) }} />
+      <div className="sidebar-bottom"><div className="sidebar-actions"><UsagePopover /><div className="sidebar-utilities"><span className="settings-connection" data-connected={connected} title={connected ? '本地引擎已连接 · 连接与设置' : '本地引擎未连接 · 查看诊断'}><IconButton label="连接与设置" className="settings-trigger" onClick={() => openSettings(connected ? 'general' : 'connection')}><Settings size={17} /><span className="connection-status-text" role="status">{connected ? '本地引擎已连接' : runtime.state === 'starting' ? '正在连接本地引擎' : '本地引擎未连接'}</span></IconButton></span><IconButton label={theme === 'light' ? '切换深色主题' : '切换浅色主题'} onClick={() => void updatePreferences({ theme: theme === 'light' ? 'dark' : 'light' }).catch(error => setError(message(error)))}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</IconButton></div></div></div>
       </div><div className="sidebar-resize" role="separator" tabIndex={0} aria-label="调整侧边栏宽度" aria-orientation="vertical" aria-valuemin={210} aria-valuemax={420} aria-valuenow={sidebarWidth} onPointerDown={event => { sidebarDrag.current = true; setSidebarResizing(true); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault() }} onPointerMove={event => { if (sidebarDrag.current) resizeSidebar(event.clientX) }} onPointerUp={event => { sidebarDrag.current = false; setSidebarResizing(false); try { localStorage.setItem('cweb:sidebar-width', String(Math.max(210, Math.min(420, event.clientX)))) } catch {} }} onPointerCancel={() => { sidebarDrag.current = false; setSidebarResizing(false) }} onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const next = Math.max(210, Math.min(420, sidebarWidth + (event.key === 'ArrowRight' ? 10 : -10))); resizeSidebar(next); try { localStorage.setItem('cweb:sidebar-width', String(next)) } catch {} } }} />
     </aside>
 
     <main className={`main ${dropping ? 'dragging-files' : ''}`} ref={main} onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current++; setDropping(true) } }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }} onDragLeave={event => { if (event.dataTransfer.types.includes('Files') && --dragDepth.current <= 0) { dragDepth.current = 0; setDropping(false) } }} onDrop={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current = 0; setDropping(false); void addFiles(Array.from(event.dataTransfer.files)) } }} >
-      <Presence show={dropping} className="file-drop-overlay"><Upload size={32} /><strong>松开以添加附件</strong><span>图片与文件 · 每个不超过 20 MB</span></Presence><header className="topbar"><IconButton label="打开会话列表" className="mobile-menu" onClick={() => setSidebar(true)}><Menu size={18} /></IconButton><IconButton label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} className="desktop-sidebar-toggle" onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</IconButton><div className="breadcrumb"><Folder size={15} /><button className="breadcrumb-home" onClick={() => newThread(null)} disabled={busy}>工作区</button>{!home && <><span className="slash">/</span><span>{activeWorkspace?.name || baseName(activeCwd)}</span><span className="slash">/</span><strong>{thread?.title || selectedSummary?.title || '新会话'}</strong></>}</div><div className="topbar-actions">{prefs.genui && <IconButton label="GenUI 交互面板" onClick={openGenui}><Braces size={17} /></IconButton>}<IconButton label="快捷命令" onClick={() => setPalette('commands')}><Command size={16} /></IconButton>{selected && <>{boot?.capabilities?.nativeActions && <IconButton label="分支与原生审查" onClick={() => setNativeAction({ kind: 'fork', threadId: selected })}><GitBranch size={16} /></IconButton>}<IconButton label="复制终端继续命令" disabled={running || busy} onClick={() => void terminalResume()}><SquareTerminal size={16} /></IconButton><IconButton label="重命名会话" onClick={() => { if (selected) renameThread(selected) }}><Pencil size={15} /></IconButton><IconButton label="归档会话" onClick={() => void archive()} disabled={running || Boolean(thread?.externalOwner)}><Archive size={15} /></IconButton></>}<span className={`badge local-badge run-badge ${running ? 'is-running' : ''}`} role="status"><span className={`status-dot ${currentApprovals.length || thread?.choicePending ? 'waiting' : thread?.status === 'completed' ? 'complete' : ''}`} />{loadingThread ? '载入中' : currentApprovals.length ? '待确认' : thread?.choicePending ? '待回复' : running ? activeRunStage === 'compacting' ? '压缩中' : activeRunStage === 'retrying' ? '重试中' : '处理中' : thread?.status === 'completed' ? '已完成' : thread?.status === 'failed' ? '已失败' : thread?.status === 'interrupted' ? '已停止' : '本地'}</span><IconButton disabled={!activeWorkspace} label={inspector ? '隐藏工作区面板' : '显示工作区面板'} onClick={toggleInspector}><PanelRight size={17} /></IconButton></div></header>
+      <Presence show={dropping} className="file-drop-overlay"><Upload size={32} /><strong>松开以添加附件</strong><span>图片与文件 · 每个不超过 20 MB</span></Presence><header className="topbar"><IconButton label="打开会话列表" className="mobile-menu" onClick={() => setSidebar(true)}><Menu size={18} /></IconButton><IconButton label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} className="desktop-sidebar-toggle" onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</IconButton>{(teamAvailable || activeWorkspace) && <div className="team-mode-switch" aria-label="工作区视图"><button aria-pressed={!teamVisible} onClick={() => setTeamOpen(false)}>对话</button><button aria-pressed={teamVisible} onClick={() => openTeam(activeWorkspace || workspaces[0])}>团队</button></div>}<div className="breadcrumb"><Folder size={15} /><button className="breadcrumb-home" onClick={() => newThread(null)} disabled={busy}>工作区</button>{!home && <><span className="slash">/</span><span>{activeWorkspace?.name || baseName(activeCwd)}</span><span className="slash">/</span><strong>{teamVisible ? '团队关系' : thread?.title || selectedSummary?.title || '新会话'}</strong></>}</div><div className="topbar-actions">{prefs.genui && <IconButton label="GenUI 交互面板" onClick={openGenui}><Braces size={17} /></IconButton>}<IconButton label="快捷命令" onClick={() => setPalette('commands')}><Command size={16} /></IconButton>{selected && !teamVisible && <>{boot?.capabilities?.nativeActions && <IconButton label="分支与原生审查" onClick={() => setNativeAction({ kind: 'fork', threadId: selected })}><GitBranch size={16} /></IconButton>}<IconButton label="复制终端继续命令" disabled={running || busy} onClick={() => void terminalResume()}><SquareTerminal size={16} /></IconButton><IconButton label="重命名会话" onClick={() => { if (selected) renameThread(selected) }}><Pencil size={15} /></IconButton><IconButton label="归档会话" onClick={() => void archive()} disabled={running || Boolean(thread?.externalOwner)}><Archive size={15} /></IconButton></>}<span className={`badge local-badge run-badge ${running ? 'is-running' : ''}`} role="status"><span className={`status-dot ${currentApprovals.length || thread?.choicePending ? 'waiting' : thread?.status === 'completed' ? 'complete' : ''}`} />{loadingThread ? '载入中' : currentApprovals.length ? '待确认' : thread?.choicePending ? '待回复' : running ? activeRunStage === 'compacting' ? '压缩中' : activeRunStage === 'retrying' ? '重试中' : '处理中' : thread?.status === 'completed' ? '已完成' : thread?.status === 'failed' ? '已失败' : thread?.status === 'interrupted' ? '已停止' : '本地'}</span><IconButton disabled={!activeWorkspace} label={inspector ? '隐藏工作区面板' : '显示工作区面板'} onClick={toggleInspector}><PanelRight size={17} /></IconButton></div></header>
+      {teamVisible ? <TeamGraph key={team.scope} team={team} models={boot?.models || []} defaults={prefs} focusId={teamFocus} onSelect={locateTeamMessage} onApprovals={openTeamApprovals} onChoose={chooseThread} /> : <>
       <div className="conversation-stage"><div className="conversation" ref={transcript} tabIndex={0} aria-label="会话内容"><div ref={transcriptContent} className="conversation-content">
         {home ? !boot ? <div className="workspace-home workspace-loading" role="status" aria-label="正在加载工作区"><BrandMark size={26} /><p>正在载入工作台…</p><div className="conversation-skeleton" aria-hidden="true"><i /><i /><i /></div></div> : <WorkspaceHome workspaces={workspaces} threads={threads} onOpen={newThread} onAdd={addWorkspaceDialog} onThread={chooseThread} /> : !selected ? pendingMessage ? <div className="transcript"><TranscriptItem item={pendingMessage.item} /></div> : <div className="welcome"><div className="welcome-eyebrow"><span />你的代码，你的工作区</div><h1>让想法，<br /><span>在这里开始。</span></h1><p>与 Codex 一起理解、构建和打磨项目。<br />每一次执行，都在你的本机。</p><div className="starter-grid">{starters.map(starter => <button key={starter.title} className="starter" onClick={() => { setDraft(starter.prompt); requestAnimationFrame(() => composer.current?.focus()) }}><div className="starter-icon">{starter.icon}<ArrowRight size={14} /></div><strong>{starter.title}</strong><span>{starter.detail}</span></button>)}</div><div className="welcome-note"><ShieldCheck size={14} />执行前可审批，过程可查看，随时可停止</div></div>
           : !thread && threadLoadError?.id === selected ? <div className="thread-empty" role="status"><p>会话暂未载入，请重试。</p></div>
           : <Transcript key={selected} thread={displayedThread} loading={loadingThread} onLoadOlder={loadOlderHistory} approvals={currentApprovals.length} expanded={prefs.showActivityDetails} collapseTiming={prefs.activityCollapseTiming || 'next-input'} jumpTo={jumpTarget} follow={follow} paused={awayFromBottom || historyNavigation} onEdit={editMessage} onFork={boot?.capabilities?.nativeActions ? forkMessage : undefined} editDisabled={busy || Boolean(pendingMessage)} />}
       </div></div><div className="composer-dock" ref={composerDock}><div className={`composer-region ${home ? 'home-notices' : ''}`}>
-        {!home && boot?.capabilities?.goals && <GoalPanel ref={goalPanel} threadId={selected} historyReady={Boolean(thread)} update={goalUpdate} running={running} latestTaskAt={thread?.items.findLast(item => item.type === 'userMessage')?.timestamp || thread?.runs?.at(-1)?.startedAt} ensureThread={ensureGoalThread} onStart={startGoal} />}
-        {thread?.forkedFromId && <button type="button" className="fork-source" onClick={() => chooseThread(thread.forkedFromId!)}><GitBranch size={13} />查看来源话题</button>}
-        {!home && currentOptions.collaborationMode === 'plan' && <div className="plan-mode-banner"><GitBranch size={15} /><span>规划模式 · 先调查并形成方案</span><button type="button" onClick={() => changeOptions({ collaborationMode: 'default' })}>切回执行</button></div>}
         {(awayFromBottom || historyNavigation) && !home && <button type="button" className="scroll-to-bottom" onClick={showLatest}><ArrowDown size={15} />回到底部</button>}
+        <div className="composer-support">
+        {!home && boot?.capabilities?.goals && <GoalPanel ref={goalPanel} threadId={selected} historyReady={Boolean(thread)} update={goalUpdate} running={running} latestTaskAt={thread?.items.findLast(item => item.type === 'userMessage')?.timestamp || thread?.runs?.at(-1)?.startedAt} ensureThread={ensureGoalThread} onStart={startGoal} />}
+        {thread?.forkedFromId && threads.some(row => row.id === thread.forkedFromId) && <button type="button" className="fork-source" onClick={() => chooseThread(thread.forkedFromId!)}><GitBranch size={13} />查看来源话题</button>}
+        {!home && currentOptions.collaborationMode === 'plan' && <div className="plan-mode-banner"><GitBranch size={15} /><span>规划模式 · 先调查并形成方案</span><button type="button" onClick={() => changeOptions({ collaborationMode: 'default' })}>切回执行</button></div>}
         {error && <Notice text={error} onClose={() => setError('')} />}
         {threadLoadError?.id === selected && <div className="connection-notice" role="alert"><span>{threadLoadError.text}</span><button type="button" disabled={!connected} onClick={() => { setThreadLoadError(null); setThreadRetry(value => value + 1) }}>重试载入会话</button></div>}
         <ConnectionNotice online={online} connected={connected} runtime={runtime} onReconnect={() => setReload(value => value + 1)} onDetails={() => openSettings('connection')} />
         <Presence show={Boolean(toast)} className="toast" role="status"><Check size={14} />{toast}</Presence>
-        {thread?.externalOwner && <div className="connection-notice session-notice"><span>这个会话的任务仍在另一端执行，结束后可在网页继续。</span><button disabled={handoffBusy} onClick={() => void handoff()}>{handoffBusy ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}检查并在网页继续</button></div>}
+        {thread?.externalOwner && <div className="connection-notice session-notice"><span>这个会话正在终端运行。你可以先写草稿，等任务结束后再从网页发送。</span><button type="button" disabled={handoffBusy || !connected} onClick={() => void handoff()}>{handoffBusy ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}检查能否继续</button></div>}
         {pluginEnabled && thread?.todoTools === 'waiting' && !thread.externalOwner && <div className="connection-notice session-notice"><span>待办工具等待会话重新载入；如果另一端仍打开此会话，请先退出该会话。</span><button disabled={handoffBusy || running || !connected} onClick={() => void connectTodo()}><RefreshCw size={14} />检查待办连接</button></div>}
         {draftSaveError && <Notice text={draftSaveError} />}
         <ApprovalStack approvals={currentApprovals} onError={setError} />
         <ChoiceDock />
-        <RunStatus thread={thread} approvals={currentApprovals.length} />
+        </div>
+        {!thread?.externalOwner && <RunStatus thread={thread} approvals={currentApprovals.length} />}
         <SessionFeedback thread={thread} />
-        {pendingMessage && <div className={`message-delivery ${['failed', 'unknown'].includes(pendingMessage.state) ? 'failed' : ''}`} role="status"><span>{pendingMessage.state === 'unknown' ? `提交结果待核对：${pendingMessage.error || '未重复发送。'}` : pendingMessage.state === 'failed' ? `发送未确认：${pendingMessage.error}` : pendingMessage.state === 'syncing' ? '已提交，正在同步 CLI 记录…' : '正在发送…'}</span>{['unknown', 'syncing'].includes(pendingMessage.state) && <button type="button" disabled={!connected} onClick={() => void checkDelivery(pendingMessage)}>核对结果</button>}{['failed', 'unknown'].includes(pendingMessage.state) && <button type="button" onClick={() => recoverMessage(pendingMessage)}>恢复草稿</button>}</div>}
+        {currentDeliveries.map(delivery => <div key={delivery.id} className={`message-delivery ${['failed', 'unknown', 'unrecorded'].includes(delivery.state) ? 'failed' : ''}`} role="status">
+          <span title={delivery.state === 'unknown' ? delivery.error : undefined}>{delivery.state === 'unknown' ? '暂时无法确认消息是否送达。' : delivery.state === 'failed' ? `发送失败。${delivery.error || '可恢复草稿后再试。'}` : delivery.state === 'syncing' ? '消息已提交，正在检查它是否出现在对话里…' : delivery.state === 'unrecorded' ? '这条消息已提交，但未出现在对话记录里。你可以继续发送新消息。' : '正在发送…'}</span>
+          {(['syncing', 'unrecorded'].includes(delivery.state) || delivery.state === 'unknown' && boot?.capabilities?.durableMessages) && <button type="button" disabled={!connected} onClick={() => void checkDelivery(delivery, true)}>检查发送状态</button>}
+          {['failed', 'unknown', 'unrecorded'].includes(delivery.state) && <button type="button" disabled={busy} onClick={() => recoverMessage(delivery)}>恢复草稿</button>}
+          {delivery.state === 'unrecorded' && <IconButton label="关闭发送提醒" onClick={() => dismissDelivery(delivery.id)}><X size={14} /></IconButton>}
+        </div>)}
         <Presence show={Boolean(editing)} className="edit-message-banner"><Pencil size={15} /><div><strong>编辑历史消息</strong><span>{editing?.merged ? '本轮较早的指令已合并。' : ''}{running ? '发送时先停止当前任务，' : '发送后'}回退本轮及后续对话，项目文件不回退。</span></div><button type="button" disabled={busy} onClick={cancelEdit}>取消编辑</button></Presence>
-        {!home && <Composer key={draftKey} editing={Boolean(editing)} input={composer} draft={draft} onDraft={setDraft} prefs={prefs} options={currentOptions} onOptions={changeOptions} models={boot?.models || []} loadingStyle={loadingStyle}
+        {!home && <Composer key={draftKey} editing={Boolean(editing)} input={composer} draft={draft} onDraft={setDraft} prefs={prefs} options={currentOptions} onOptions={changeOptions} models={boot?.models || []} fastTier={modelFastTier} loadingStyle={loadingStyle}
           thread={thread} compactPending={Boolean(thread?.compacting || selected && compactPending[selected])} compactUnavailableReason={!boot?.capabilities?.contextUsageMenu ? '快捷压缩将在服务空闲更新后启用；上下文用量可正常查看' : undefined} onCompact={compactContext}
           files={files} onFiles={files => void addFiles(files)} onRemove={id => setFileDrafts(previous => ({ ...previous, [draftKey]: files.filter(file => file.id !== id) }))} uploading={Boolean(uploads[draftKey])}
           skills={skills} skillIndex={availableSkills} skillsLoading={skillsLoading} onRefreshSkills={() => setSkillsRevision(value => value + 1)} onToggleSkill={toggleSkill} onSkills={() => void selectSkills()} onRemoveSkill={path => setSkillDrafts(previous => ({ ...previous, [draftKey]: skills.filter(skill => skill.path !== path) }))}
           workspaceId={activeWorkspace?.id} referenceIndexReady={boot?.capabilities?.fileReferences} references={references} onToggleReference={toggleReference}
-          history={history} running={running} busy={busy || pendingMessage?.state === 'syncing'} disabled={!connected || !activeWorkspace || Boolean(selected && !thread) || Boolean(thread?.externalOwner) || Boolean(pendingMessage) || Boolean(thread?.compacting || selected && compactPending[selected])} onSubmit={queued => void submit(queued)} onInterrupt={() => void interrupt()} onCommand={runCommand}
+          history={history} running={running && !thread?.externalOwner} busy={busy} waitingToSend={Boolean(pendingMessage || thread?.externalOwner)} disabled={!connected || !activeWorkspace || Boolean(selected && !thread) || Boolean(thread?.externalOwner) || Boolean(pendingMessage) || Boolean(thread?.compacting || selected && compactPending[selected])} onSubmit={queued => void submit(queued)} onInterrupt={() => void interrupt()} onCommand={runCommand}
+          teamQueue={<TeamQueue key={`${team.scope}:${selected || ''}`} team={team.state} threadId={selected || undefined} manualQueueCount={queue.filter(row => row.threadId === selected).length} onReview={reviewQueuedCommunication} onCombine={combineQueuedCommunication} saving={team.saving} />}
           queue={queue.filter(row => row.threadId === selected)} onQueue={(id, retry) => void api(`/queue/${id}/${retry ? 'retry' : 'remove'}`, {}).catch(error => setError(message(error)))} />}
 
       </div></div>{thread && <TurnNavigator items={thread.items} viewport={transcript} onNavigate={navigateMessage} />}<ThreadNotices notices={notices} workspaces={workspaces} onJump={jumpToNotice} onDismiss={dismissNotice} /></div>
+    </>}
+    {teamVisible && <ThreadNotices notices={notices} workspaces={workspaces} onJump={jumpToNotice} onDismiss={dismissNotice} />}
     </main>
     {genuiOpen && <GenuiPanel panels={genuiPanels} closing={genuiExit.closing} onClose={closeGenui} />}
-    {!genuiOpen && inspector && activeWorkspace && <Inspector key={activeWorkspace.id} cwd={activeCwd} root={activeWorkspace.path} workspaceId={activeWorkspace.id} thread={thread} closing={inspectorExit.closing} onReference={referenceFile} onClose={closeInspector} />}
-    {pluginEnabled && selected && !loadingThread && <TodoNote sessionId={selected} send={pluginSend} linkPending={todoLinkPending} running={running && !currentApprovals.length && !thread?.choicePending} />}
+    {!genuiOpen && inspector && activeWorkspace && <Inspector key={activeWorkspace.id} cwd={activeCwd} root={activeWorkspace.path} workspaceId={activeWorkspace.id} thread={thread} closing={inspectorExit.closing} tab={inspectorTab} onTab={setInspectorTab} todoEnabled={todoInSidebar} todo={todoPanel} streamConnected={streamConnected} team={team.state?.enabled ? <TeamApprovals team={team} focusId={teamFocus} onLocate={locateTeamMessage} onChoose={chooseThread} defaults={prefs} previewPreferences={prefs} /> : undefined} teamCount={team.outstanding} onReference={referenceFile} onClose={closeInspector} />}
+    {!todoInSidebar && todoPanel}
 
 
     <dialog ref={dialog} data-exiting={dialogExit.closing || undefined} className={`settings-dialog ${settings ? 'categorized-settings' : ''} ${workspaceDialog && !workspaceEditing ? 'workspace-dialog' : ''}`} onCancel={event => { event.preventDefault(); closeDialogs() }} onClick={event => { if (event.target === dialog.current) { const box = dialog.current.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeDialogs() } }}>
@@ -898,6 +994,14 @@ export function App() {
             onReconnect={() => setReload(value => value + 1)} onRestored={id => { closeDialogs(); chooseThread(id) }} />}
 
     </dialog>
+    <WorkspaceMenu target={workspaceMenu} name={workspaces.find(w => w.id === workspaceMenu?.workspaceId)?.name || ''} teamAvailable={teamAvailable} teamEnabled={menuTeam?.enabled} teamBusy={team.savingScopes.includes(team.pilot ? 'pilot' : workspaceMenu?.workspaceId || '')} onClose={focus => { if (focus) workspaceMenu?.trigger.focus({ preventScroll: true }); setWorkspaceMenu(null) }} onAction={action => {
+      const workspace = workspaces.find(w => w.id === workspaceMenu?.workspaceId); if (!workspace) return
+      if (action === 'team') openTeam(workspace)
+      else if (action === 'toggle-team') { const enabled = !menuTeam?.enabled; if (enabled) openTeam(workspace); void team.act('/team/enabled', { enabled }, workspace.id).then(ok => { if (!ok) setToast('团队设置未保存，请打开该工作区的关系图核对并重试。') }) }
+      else if (action === 'rename') { setWorkspaceEditing(workspace.id); setNameDraft(workspace.name); setWorkspaceDialog(true) }
+      else { setTeamOpen(false); newThread(workspace.id) }
+    }} />
+    {teamUnavailable && <TeamAvailabilityDialog onClose={() => setTeamUnavailable(false)} />}
     <ThreadMenu target={threadMenu} title={menuSummary?.title || menuView?.title || '会话'} busy={busy} connected={connected} unavailable={menuUnavailable} nativeActions={Boolean(boot?.capabilities?.nativeActions)} onClose={closeThreadMenu} onAction={(id, action) => void threadMenuAction(id, action)} />
     {nativeAction && views[nativeAction.threadId] && <NativeActions key={nativeAction.threadId + ':' + (nativeAction.beforeTurnId || '')} action={nativeAction} thread={views[nativeAction.threadId]} onClose={() => { setNativeAction(null); requestAnimationFrame(() => composer.current?.focus()) }} onComplete={(view, fork) => { if (view) updateViews(previous => mergeView(previous, view)); if (fork && view) chooseThread(view.id); else showLatest() }} />}
     {palette && <CommandPalette key={palette} stableOrder={palette === 'threads'} title={palette === 'commands' ? '搜索命令…' : palette === 'skills' ? '选择本轮 Skill…' : palette === 'threads' ? '快速切换会话' : '搜索输入历史…'}

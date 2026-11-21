@@ -200,7 +200,7 @@ const definition = ({
   transition:width .34s cubic-bezier(.22,1,.36,1),height .36s cubic-bezier(.22,1,.36,1),
              left .34s cubic-bezier(.22,1,.36,1),top .34s cubic-bezier(.22,1,.36,1),
              border-radius .3s ease,box-shadow .25s ease,background-color .2s ease;
-  will-change:transform,width,height;font-size:13px;line-height:1.45}
+  will-change:transform,width,height;font-size:max(var(--ui-min-font, 10px), 0.9286rem);line-height:1.45}
 .dtn-card[data-view="ball"]{cursor:grab;border-radius:50%;display:grid;place-items:center;
   background:color-mix(in srgb,var(--dsw-alias-brand-primary,CanvasText) 9%,var(--dsw-alias-bg-layer-1,Canvas));
   border-color:color-mix(in srgb,var(--dsw-alias-brand-primary,CanvasText) 24%,transparent)}
@@ -223,9 +223,9 @@ const definition = ({
 
 .dtn-head{display:flex;align-items:center;gap:8px;padding:10px 10px 8px 12px;cursor:grab;user-select:none;flex:none}
 .dtn-card[data-dragging="true"] .dtn-head{cursor:grabbing}
-.dtn-title{font-weight:600;font-size:13px;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+.dtn-title{font-weight:600;font-size:max(var(--ui-min-font, 10px), 0.9286rem);letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
 .dtn-chips{display:flex;gap:4px;flex:none;align-items:center}
-.dtn-chip{font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-label-secondary) 12%,transparent);border-radius:999px;padding:0 7px;flex:none;white-space:nowrap}
+.dtn-chip{font-size:max(var(--ui-min-font, 10px), 0.7857rem);line-height:1.6;color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-label-secondary) 12%,transparent);border-radius:999px;padding:0 7px;flex:none;white-space:nowrap}
 .dtn-chip[data-tone="idle"]{color:var(--dsw-alias-label-secondary);background:transparent;border:1px dashed color-mix(in srgb,var(--dsw-alias-label-secondary) 42%,transparent);opacity:.9}
 .dtn-link{font:inherit;cursor:pointer;transition:opacity .15s ease,background .15s ease,border-color .15s ease}
 .dtn-link:hover{opacity:1;background:color-mix(in srgb,var(--dsw-alias-label-secondary) 12%,transparent);border-style:solid}
@@ -246,9 +246,9 @@ const definition = ({
 .dtn-icon[data-shape="circle"]:hover{border-color:var(--dsw-alias-brand-primary)}
 .dtn-icon[data-shape="circle"][data-tone="primary"]{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,transparent)}
 .dtn-focus{padding:2px 10px 8px;flex:none;display:flex;flex-direction:column;gap:4px}
-.dtn-focus-row{display:flex;gap:6px;align-items:flex-start;min-width:0;font-size:12.5px;line-height:1.5;padding:3px 7px;border-radius:8px;
+.dtn-focus-row{display:flex;gap:6px;align-items:flex-start;min-width:0;font-size:max(var(--ui-min-font, 10px), 0.8929rem);line-height:1.5;padding:3px 7px;border-radius:8px;
   border:1px solid transparent;transition:background .25s ease,border-color .25s ease}
-.dtn-focus-key{color:var(--dsw-alias-label-secondary);flex:none;font-size:10.5px;line-height:1.6;letter-spacing:.02em;font-weight:600;
+.dtn-focus-key{color:var(--dsw-alias-label-secondary);flex:none;font-size:max(var(--ui-min-font, 10px), 0.75rem);line-height:1.6;letter-spacing:.02em;font-weight:600;
   padding:0 6px;border-radius:6px;border:1px solid color-mix(in srgb,var(--dsw-alias-label-secondary) 22%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-label-secondary) 10%,transparent);margin-top:1px}
 .dtn-focus-row[data-kind="now"]{background:color-mix(in srgb,var(--dtn-blue) 12%,transparent);
@@ -267,7 +267,7 @@ const definition = ({
 .dtn-scroll::-webkit-scrollbar{width:6px}
 .dtn-scroll::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--dsw-alias-label-secondary) 35%,transparent);border-radius:3px}
 .dtn-scroll::-webkit-scrollbar-track{background:transparent}
-.dtn-section{display:flex;align-items:center;gap:8px;padding:9px 6px 3px;font-size:10.5px;letter-spacing:.06em;
+.dtn-section{display:flex;align-items:center;gap:8px;padding:9px 6px 3px;font-size:max(var(--ui-min-font, 10px), 0.75rem);letter-spacing:.06em;
   text-transform:uppercase;color:var(--dsw-alias-label-secondary);flex:none}
 .dtn-section::after{content:"";flex:1;height:1px;background:var(--dsw-alias-border-l1,color-mix(in srgb,CanvasText 12%,transparent))}
 .dtn-task{display:flex;gap:8px;align-items:flex-start;padding:6px 6px 6px 8px;border-radius:8px;position:relative;overflow:hidden;
@@ -314,10 +314,10 @@ const definition = ({
 .dtn-task-title::after{content:"";position:absolute;left:-2px;right:-2px;top:52%;height:1.4px;border-radius:1px;
   background:currentColor;transform:scaleX(0);transform-origin:left center;transition:transform .34s cubic-bezier(.4,0,.2,1)}
 .dtn-task[data-strike="true"] .dtn-task-title::after{transform:scaleX(1)}
-.dtn-task-note{margin-top:2px;font-size:11.5px;color:var(--dsw-alias-label-secondary);word-break:break-word}
+.dtn-task-note{margin-top:2px;font-size:max(var(--ui-min-font, 10px), 0.8214rem);color:var(--dsw-alias-label-secondary);word-break:break-word}
 .dtn-card[data-view="note"] .dtn-task-note{display:none}
-.dtn-card[data-view="note"] .dtn-task[data-state="awaiting"] .dtn-task-note,.dtn-measure .dtn-task[data-state="awaiting"] .dtn-task-note{display:block;white-space:pre-wrap;font-size:12px;line-height:1.65;margin-top:6px;margin-bottom:7px}
-.dtn-task-meta{display:flex;gap:6px;align-items:center;margin-top:3px;font-size:10.5px;color:var(--dsw-alias-label-secondary);opacity:.8}
+.dtn-card[data-view="note"] .dtn-task[data-state="awaiting"] .dtn-task-note,.dtn-measure .dtn-task[data-state="awaiting"] .dtn-task-note{display:block;white-space:pre-wrap;font-size:max(var(--ui-min-font, 10px), 0.8571rem);line-height:1.65;margin-top:6px;margin-bottom:7px}
+.dtn-task-meta{display:flex;gap:6px;align-items:center;margin-top:3px;font-size:max(var(--ui-min-font, 10px), 0.75rem);color:var(--dsw-alias-label-secondary);opacity:.8}
 .dtn-task-actions{position:absolute;top:3px;right:3px;display:flex;gap:1px;padding:2px;border-radius:7px;
   background:color-mix(in srgb,var(--dsw-alias-bg-layer-2,Canvas) 92%,transparent);
   box-shadow:0 1px 5px color-mix(in srgb,var(--dsw-alias-label-primary,CanvasText) 14%,transparent);
@@ -325,8 +325,8 @@ const definition = ({
 .dtn-task:hover .dtn-task-actions,.dtn-task:focus-within .dtn-task-actions{opacity:1;pointer-events:auto}
 .dtn-confirm{display:flex;justify-content:flex-end;align-items:center;gap:4px;margin-top:5px;white-space:nowrap}
 .dtn-confirm .dtn-icon{width:17px;height:17px;border-radius:5px}
-.dtn-confirm-hint{font-size:10.5px;color:var(--dsw-alias-label-secondary);margin-right:2px}
-.dtn-btn{font:inherit;font-size:11px;line-height:1.5;border-radius:6px;padding:2px 9px;cursor:pointer;
+.dtn-confirm-hint{font-size:max(var(--ui-min-font, 10px), 0.75rem);color:var(--dsw-alias-label-secondary);margin-right:2px}
+.dtn-btn{font:inherit;font-size:max(var(--ui-min-font, 10px), 0.7857rem);line-height:1.5;border-radius:6px;padding:2px 9px;cursor:pointer;
   color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);
   background:color-mix(in srgb,var(--dsw-alias-bg-layer-2,Canvas) 80%,transparent);
   transition:border-color .16s ease,color .16s ease,background .16s ease,transform .12s ease}
@@ -340,15 +340,15 @@ const definition = ({
   border-top:1px solid var(--dsw-alias-border-l1,color-mix(in srgb,CanvasText 12%,transparent));
   animation:dtn-composer-in .22s cubic-bezier(.22,1,.36,1) both}
 @keyframes dtn-composer-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-.dtn-input{flex:1;min-width:0;font:inherit;font-size:12px;color:inherit;background:color-mix(in srgb,var(--dsw-alias-bg-base,Canvas) 55%,transparent);
+.dtn-input{flex:1;min-width:0;font:inherit;font-size:max(var(--ui-min-font, 10px), 0.8571rem);color:inherit;background:color-mix(in srgb,var(--dsw-alias-bg-base,Canvas) 55%,transparent);
   border:1px solid var(--dsw-alias-border-l1);border-radius:7px;padding:5px 8px;outline:none;
   transition:border-color .18s ease,background .18s ease}
 .dtn-input::placeholder{color:var(--dsw-alias-label-secondary);opacity:.75}
 .dtn-input:focus{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-base,Canvas)}
 .dtn-plan{padding:2px 8px 4px}
-.dtn-plan-title{display:flex;align-items:baseline;gap:8px;justify-content:space-between;font-size:12px;font-weight:600}
-.dtn-plan-pct{font-variant-numeric:tabular-nums;color:var(--dsw-alias-brand-primary);font-size:12px}
-.dtn-plan-sub{display:flex;justify-content:space-between;font-size:10.5px;color:var(--dsw-alias-label-secondary);margin-top:2px}
+.dtn-plan-title{display:flex;align-items:baseline;gap:8px;justify-content:space-between;font-size:max(var(--ui-min-font, 10px), 0.8571rem);font-weight:600}
+.dtn-plan-pct{font-variant-numeric:tabular-nums;color:var(--dsw-alias-brand-primary);font-size:max(var(--ui-min-font, 10px), 0.8571rem)}
+.dtn-plan-sub{display:flex;justify-content:space-between;font-size:max(var(--ui-min-font, 10px), 0.75rem);color:var(--dsw-alias-label-secondary);margin-top:2px}
 .dtn-progress{height:6px;border-radius:999px;margin:6px 0 6px;overflow:hidden;
   background:color-mix(in srgb,var(--dsw-alias-label-secondary) 18%,transparent)}
 .dtn-progress-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);
@@ -357,10 +357,10 @@ const definition = ({
 .dtn-timeline::before{content:'';position:absolute;left:7px;top:9px;bottom:9px;width:2px;border-radius:2px;
   background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 60%,transparent)}
 @keyframes dtn-spin{to{transform:rotate(360deg)}}
-.dtn-phase{position:relative;display:flex;gap:8px;align-items:flex-start;padding:4px 6px 4px 4px;border-radius:7px;font-size:12px;animation:dtn-row-in .3s ease both}
+.dtn-phase{position:relative;display:flex;gap:8px;align-items:flex-start;padding:4px 6px 4px 4px;border-radius:7px;font-size:max(var(--ui-min-font, 10px), 0.8571rem);animation:dtn-row-in .3s ease both}
 .dtn-phase:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}
 .dtn-node{position:absolute;left:-24px;top:3px;width:16px;height:16px;border-radius:50%;flex:none;
-  display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;line-height:1;
+  display:flex;align-items:center;justify-content:center;font-size:max(var(--ui-min-font, 10px), 0.6429rem);font-weight:600;line-height:1;
   background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);
   border:1.5px solid color-mix(in srgb,var(--dsw-alias-label-secondary) 40%,transparent);box-sizing:border-box}
 .dtn-node[data-status="done"]{background:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-bg-base)}
@@ -368,7 +368,7 @@ const definition = ({
 .dtn-node[data-status="active"]::after{content:'';position:absolute;inset:-4px;border-radius:50%;
   border:1.5px dashed color-mix(in srgb,var(--dsw-alias-brand-primary) 75%,transparent);
   animation:dtn-spin 2.2s linear infinite}
-.dtn-branch{position:relative;margin:1px 0 3px 2px;padding-left:20px;font-size:11.5px;
+.dtn-branch{position:relative;margin:1px 0 3px 2px;padding-left:20px;font-size:max(var(--ui-min-font, 10px), 0.8214rem);
   color:color-mix(in srgb,var(--dtn-blue) 78%,var(--dsw-alias-label-primary));
   display:flex;gap:6px;align-items:flex-start}
 .dtn-branch::before{content:'';position:absolute;left:2px;top:0;width:13px;height:11px;
@@ -379,25 +379,25 @@ const definition = ({
 .dtn-phase-body{flex:1;min-width:0}
 .dtn-phase[data-status="done"] .dtn-phase-title{color:var(--dsw-alias-label-secondary);text-decoration:line-through;text-decoration-thickness:1px}
 .dtn-phase[data-status="active"] .dtn-phase-title{font-weight:600}
-.dtn-phase-status{font-size:10px;color:var(--dsw-alias-label-secondary);flex:none;margin-top:2px;opacity:.8}
-.dtn-goal{display:flex;gap:7px;align-items:flex-start;padding:3px 6px;font-size:12px}
-.dtn-goal-mark{flex:none;width:12px;color:var(--dsw-alias-state-success-primary);margin-top:2px;font-size:11px;text-align:center}
+.dtn-phase-status{font-size:max(var(--ui-min-font, 10px), 0.7143rem);color:var(--dsw-alias-label-secondary);flex:none;margin-top:2px;opacity:.8}
+.dtn-goal{display:flex;gap:7px;align-items:flex-start;padding:3px 6px;font-size:max(var(--ui-min-font, 10px), 0.8571rem)}
+.dtn-goal-mark{flex:none;width:12px;color:var(--dsw-alias-state-success-primary);margin-top:2px;font-size:max(var(--ui-min-font, 10px), 0.7857rem);text-align:center}
 .dtn-goal[data-done="true"] .dtn-goal-text{color:var(--dsw-alias-label-secondary);text-decoration:line-through}
-.dtn-done{display:flex;gap:7px;align-items:baseline;padding:3px 8px;font-size:11.5px;color:var(--dsw-alias-label-secondary);opacity:.75}
+.dtn-done{display:flex;gap:7px;align-items:baseline;padding:3px 8px;font-size:max(var(--ui-min-font, 10px), 0.8214rem);color:var(--dsw-alias-label-secondary);opacity:.75}
 .dtn-done-title{flex:1 1 auto;min-width:0;text-decoration:line-through;text-decoration-thickness:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dtn-done-when{flex:none;font-size:10px;opacity:.8}
-.dtn-empty{padding:14px 12px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12px;opacity:.85}
+.dtn-done-when{flex:none;font-size:max(var(--ui-min-font, 10px), 0.7143rem);opacity:.8}
+.dtn-empty{padding:14px 12px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:max(var(--ui-min-font, 10px), 0.8571rem);opacity:.85}
 .dtn-skeleton{height:9px;border-radius:5px;margin:9px 12px;
   background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-label-secondary) 12%,transparent),
     color-mix(in srgb,var(--dsw-alias-label-secondary) 22%,transparent),
     color-mix(in srgb,var(--dsw-alias-label-secondary) 12%,transparent));
   background-size:220% 100%;animation:dtn-shimmer 1.4s ease-in-out infinite}
-.dtn-status{flex:none;padding:0 12px 8px;font-size:10.5px;color:var(--dsw-alias-state-warn-primary);opacity:.9}
+.dtn-status{flex:none;padding:0 12px 8px;font-size:max(var(--ui-min-font, 10px), 0.75rem);color:var(--dsw-alias-state-warn-primary);opacity:.9}
 .dtn-ball-inner{position:relative;width:100%;height:100%;display:grid;place-items:center}
 .dtn-ball-ring{position:absolute;inset:4px;transform:rotate(-90deg);pointer-events:none}
-.dtn-ball-count{position:relative;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1}
+.dtn-ball-count{position:relative;font-size:max(var(--ui-min-font, 10px), 0.9286rem);font-weight:600;font-variant-numeric:tabular-nums;line-height:1}
 .dtn-ball-badge{position:absolute;top:-1px;right:-1px;min-width:14px;height:14px;border-radius:7px;padding:0 3px;
-  display:grid;place-items:center;font-size:9.5px;font-weight:700;color:var(--dsw-alias-bg-base,Canvas);
+  display:grid;place-items:center;font-size:max(var(--ui-min-font, 10px), 0.6786rem);font-weight:700;color:var(--dsw-alias-bg-base,Canvas);
   background:var(--dsw-alias-state-warn-primary);animation:dtn-pulse 2.2s ease-in-out infinite}
 @keyframes dtn-row-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes dtn-pop{from{opacity:0}to{opacity:1}}
@@ -1091,7 +1091,7 @@ function mergedRows(tasks, striking) {
     function createPanel(ctx) {
       const t = createTranslator(ctx)
 
-      function TodoPanel({ linkPending = false, running = false } = {}) {
+      function TodoPanel({ linkPending = false, running = false, docked = false } = {}) {
         const sessionId = useMountedSession(ctx)
         const [prefs, setPrefs] = useState(readPrefs)
         const [striking, setStriking] = useState([])
@@ -1140,7 +1140,7 @@ function mergedRows(tasks, striking) {
         useEffect(() => { setLinkError('') }, [sessionId])
         useEffect(() => { confirmations.current.clear(); setStriking([]); setActionError('') }, [sessionId])
 
-        const view = prefs.view
+        const view = docked ? 'detail' : prefs.view
         const sizeNow = useCallback(
           (which) => {
             const base = sizeOf(which)
@@ -1156,12 +1156,13 @@ function mergedRows(tasks, striking) {
 
         // A smaller viewport must not swallow the panel.
         useEffect(() => {
+          if (docked) return
           const onResize = () => {
             setPosition((previous) => (previous ? clampPos(previous.x, previous.y, sizeOf(view)) : previous))
           }
           window.addEventListener('resize', onResize)
           return () => window.removeEventListener('resize', onResize)
-        }, [view])
+        }, [view, docked])
 
         useEffect(
           () => () => {
@@ -1172,9 +1173,9 @@ function mergedRows(tasks, striking) {
         )
 
         useEffect(() => {
-          if (!position) return
+          if (docked || !position) return
           writePrefs({ view, x: position.x, y: position.y })
-        }, [position, view])
+        }, [position, view, docked])
 
         const persist = useCallback((patch) => {
           setPrefs((previous) => ({ ...previous, ...patch }))
@@ -1819,6 +1820,7 @@ function mergedRows(tasks, striking) {
         // note), the text wraps into far more lines than it will settle on, so
         // wait for the target width before trusting a measurement.
         useLayoutEffect(() => {
+          if (docked) return
           const card = cardRef.current
           if (!card) return
           let frames = 0
@@ -1897,12 +1899,12 @@ function mergedRows(tasks, striking) {
           }
           measure()
           return () => cancelAnimationFrame(raf)
-        }, [view, note, rows.length, striking, composerOpen])
+        }, [view, note, rows.length, striking, composerOpen, docked])
 
         if (!sessionId) return null
 
         const cardHeight = view === 'note' && !noteHeight ? 'auto' : `${size.h}px`
-        const rootStyle = position
+        const rootStyle = docked ? undefined : position
           ? { left: `${position.x}px`, top: `${position.y}px`, width: `${size.w}px`, height: cardHeight, borderRadius: `${size.radius}px` }
           : { visibility: 'hidden', width: `${size.w}px`, height: cardHeight }
 
@@ -1918,9 +1920,9 @@ function mergedRows(tasks, striking) {
             role: 'complementary',
             'aria-label': t('title'),
             onPointerDown: view === 'ball' ? onPointerDown : undefined,
-            onPointerMove,
-            onPointerUp,
-            onPointerCancel: onPointerUp,
+            onPointerMove: docked ? undefined : onPointerMove,
+            onPointerUp: docked ? undefined : onPointerUp,
+            onPointerCancel: docked ? undefined : onPointerUp,
           },
           view === 'ball'
             ? h(BallContent, { note, t })
@@ -1929,7 +1931,7 @@ function mergedRows(tasks, striking) {
                 null,
                 h(
                   'div',
-                  { className: 'dtn-head', onPointerDown, onDoubleClick: resetPosition, title: t('openIcon') },
+                  { className: 'dtn-head', onPointerDown: docked ? undefined : onPointerDown, onDoubleClick: docked ? undefined : resetPosition, title: docked ? undefined : t('openIcon') },
                   h(
                     IconButton,
                     {
@@ -1966,7 +1968,7 @@ function mergedRows(tasks, striking) {
                       ? h('span', { className: 'dtn-chip', 'data-tone': 'warn' }, awaitingCount)
                       : null,
                   ),
-                  h(
+                  !docked && h(
                     'span',
                     { className: 'dtn-actions' },
                     h(IconButton, { title: t('toBall'), onClick: () => changeView('ball') }, h(IconMinimize, { size: 13 })),
@@ -2023,7 +2025,7 @@ function mergedRows(tasks, striking) {
           // instead of the live card means the height is already correct before
           // a detail -> note transition starts, so the card shrinks in one move
           // instead of shrinking and then correcting itself.
-          view === 'note'
+          docked || view === 'note'
             ? null
             : h(
                 'div',
@@ -2057,7 +2059,7 @@ function mergedRows(tasks, striking) {
           // Off-screen twin of the detail body at 560px: the detail view sizes
           // itself to its content, and measuring before the switch avoids an
           // expand-then-shrink in two steps.
-          view === 'detail'
+          docked || view === 'detail'
             ? null
             : h(
                 'div',
@@ -2112,7 +2114,7 @@ function mergedRows(tasks, striking) {
               ),
         )
 
-        return h('div', { className: 'dtn-layer' }, card)
+        return h('div', { className: 'dtn-layer', 'data-layout': docked ? 'sidebar' : 'floating' }, card)
       }
 
       return TodoPanel

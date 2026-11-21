@@ -10,10 +10,27 @@ const threads = store && existsSync(store) ? JSON.parse(readFileSync(store, 'utf
 const requests = new Map()
 const loaded = new Set()
 const mcpServers = new Map()
+const teamMcpServers = new Map()
+const sessionSettings = new Map()
 const held = new Set()
 const save = () => { if (store) writeFileSync(store, JSON.stringify(threads)) }
 const send = value => process.stdout.write(JSON.stringify(value) + '\n')
 const notify = (method, params) => send({ method, params })
+const effectiveSettings = thread => ({
+  model: thread.model || 'fixture', reasoningEffort: thread.reasoningEffort || null,
+  ...(sessionSettings.get(thread.id) || { sandbox: { type: 'workspaceWrite', writableRoots: [thread.cwd], networkAccess: false }, approvalPolicy: 'on-request' }),
+  approvalsReviewer: 'user',
+})
+const configureSession = (thread, params) => {
+  const current = effectiveSettings(thread)
+  const sandbox = params.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' }
+    : params.sandbox === 'read-only' ? { type: 'readOnly', networkAccess: false }
+    : params.sandbox === 'workspace-write' ? { type: 'workspaceWrite', writableRoots: [thread.cwd], networkAccess: false }
+    : current.sandbox
+  sessionSettings.set(thread.id, { sandbox, approvalPolicy: params.approvalPolicy ?? current.approvalPolicy })
+  if (params.model) thread.model = params.model
+  if (params.config?.model_reasoning_effort) thread.reasoningEffort = params.config.model_reasoning_effort
+}
 const finish = (thread, turn, status = 'completed') => {
   turn.completedAt = Date.now() / 1000; turn.durationMs = Math.max(0, (turn.completedAt - (turn.startedAt || turn.completedAt)) * 1000)
   thread.totalTokens = (thread.totalTokens || 0) + 120
@@ -51,7 +68,11 @@ createInterface({ input: process.stdin }).on('line', line => {
   const thread = threads[params.threadId]
   if (request.method === 'initialize') respond({ userAgent: 'fake-codex-test-only' })
   else if (request.method === 'initialized') return
-  else if (request.method === 'model/list') respond({ data: [{ id: 'fixture', model: 'fixture', displayName: '测试模型', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }, { id: 'fixture-next', model: 'fixture-next', displayName: '测试备用模型', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }], nextCursor: null })
+  else if (request.method === 'model/list') respond({ data: [
+    { id: 'fixture', model: 'fixture', displayName: '测试模型', isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
+    { id: 'fixture-next', model: 'fixture-next', displayName: '测试备用模型', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
+    { id: 'gpt-6.2-sol', model: 'gpt-6.2-sol', displayName: 'gpt-6.2-SOL', supportedReasoningEfforts: [{ reasoningEffort: 'high' }], serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster responses' }] },
+  ], nextCursor: null })
   else if (request.method === 'collaborationMode/list') respond({ data: [{ name: 'Default', mode: 'default', model: 'fixture', reasoning_effort: null }, { name: 'Plan', mode: 'plan', model: 'fixture', reasoning_effort: 'medium' }] })
   else if (request.method === 'thread/goal/get') respond({ goal: thread.goal || null })
   else if (request.method === 'thread/goal/set') {
@@ -86,17 +107,21 @@ createInterface({ input: process.stdin }).on('line', line => {
   else if (request.method === 'thread/start') {
     if (params.dynamicTools?.some(tool => !['function', 'namespace'].includes(tool.type))) { send({ id: request.id, error: { code: -32602, message: 'dynamic tool format invalid' } }); return }
     const id = randomUUID()
-    threads[id] = { id, name: null, preview: '', cwd: params.cwd, model: params.model || 'fixture', updatedAt: Date.now() / 1000, turns: [], historyMode: params.historyMode || 'paginated' }
+    threads[id] = { id, name: null, preview: '', cwd: params.cwd, model: params.model || 'fixture', reasoningEffort: params.config?.model_reasoning_effort || null, updatedAt: Date.now() / 1000, turns: [], historyMode: params.historyMode || 'paginated' }
+    configureSession(threads[id], params)
     loaded.add(id)
-    save(); respond({ thread: threads[id], model: threads[id].model })
+    save(); respond({ thread: threads[id], ...effectiveSettings(threads[id]) })
   } else if (request.method === 'thread/resume') {
     if (!loaded.has(params.threadId)) {
+      configureSession(thread, params)
       const key = Object.keys(params.config || {}).find(key => key.startsWith('mcp_servers.cweb_note_'))
       if (key) mcpServers.set(params.threadId, key.slice('mcp_servers.'.length))
+      const teamKey = Object.keys(params.config || {}).find(key => key === 'mcp_servers.cweb_team' || key.startsWith('mcp_servers.cweb_team_'))
+      if (teamKey) teamMcpServers.set(params.threadId, teamKey.slice('mcp_servers.'.length))
     }
-    loaded.add(params.threadId); respond({ thread: { ...thread, ...(params.excludeTurns ? { turns: [] } : {}), status: { type: 'idle' } }, model: 'fixture' })
+    loaded.add(params.threadId); respond({ thread: { ...thread, ...(params.excludeTurns ? { turns: [] } : {}), status: { type: 'idle' } }, ...effectiveSettings(thread) })
   }
-  else if (request.method === 'thread/read') respond({ thread: { ...thread, ...(params.includeTurns === false ? { turns: [] } : {}), status: { type: loaded.has(params.threadId) ? thread.turns.at(-1)?.status === 'inProgress' ? 'active' : 'idle' : 'notLoaded' } }, model: 'fixture' })
+  else if (request.method === 'thread/read') respond({ thread: { ...thread, ...(params.includeTurns === false ? { turns: [] } : {}), status: { type: loaded.has(params.threadId) ? thread.turns.at(-1)?.status === 'inProgress' ? 'active' : 'idle' : 'notLoaded' } } })
   else if (request.method === 'thread/turns/list') {
     const all = params.sortDirection === 'asc' ? thread.turns : [...thread.turns].reverse()
     const start = Number(params.cursor || 0), limit = params.limit || 50
@@ -111,11 +136,16 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   else if (request.method === 'mcpServerStatus/list') {
     const name = mcpServers.get(params.threadId)
-    respond({ data: name ? [{ name, serverInfo: { name: 'cweb-todo-note' }, tools: { todo_note_read: {}, todo_note_update: {}, todo_note_complete: {} } }] : [], nextCursor: null })
+    const teamName = teamMcpServers.get(params.threadId)
+    const data = [
+      ...(name ? [{ name, serverInfo: { name: 'cweb-todo-note' }, tools: { todo_note_read: {}, todo_note_update: {}, todo_note_complete: {} } }] : []),
+      ...(teamName ? [{ name: teamName, serverInfo: { name: 'cweb-team' }, tools: { team_members: {}, team_inbox: {}, team_propose_message: {}, team_review_message: {}, team_request_member: {} } }] : []),
+    ]
+    respond({ data: params.serverName ? data.filter(server => server.name === params.serverName) : data, nextCursor: null })
   }
   else if (request.method === 'skills/list') respond({ data: params.cwds.map(cwd => ({ cwd, skills: [{ name: 'fixture-skill', description: '测试技能，用于验证原生调用', path: cwd + '/SKILL.md', scope: 'repo', enabled: true }], errors: [] })) })
   else if (request.method === 'thread/unarchive') { thread.archived = false; save(); respond({ thread }) }
-  else if (request.method === 'thread/unsubscribe') { if (!held.has(params.threadId)) { loaded.delete(params.threadId); mcpServers.delete(params.threadId) } respond({ status: 'unsubscribed' }) }
+  else if (request.method === 'thread/unsubscribe') { if (!held.has(params.threadId)) { loaded.delete(params.threadId); mcpServers.delete(params.threadId); teamMcpServers.delete(params.threadId) } respond({ status: 'unsubscribed' }) }
   else if (request.method === 'thread/compact/start') respond({})
   else if (request.method === 'test/finish') { respond({}); finish(thread, thread.turns.at(-1)) }
   else if (request.method === 'test/append') { item(thread, thread.turns.at(-1), { id: randomUUID(), type: 'agentMessage', text: params.text, phase: params.phase || 'commentary', ...(params.questions ? {questions:params.questions,delivery:'async'} : {}) }); respond({}) }
@@ -196,11 +226,11 @@ createInterface({ input: process.stdin }).on('line', line => {
     respond({}); finish(thread, turn, 'interrupted')
   } else if (request.method === 'turn/steer') {
     const turn = thread.turns.find(turn => turn.id === params.expectedTurnId)
-    item(thread, turn, { id: params.clientUserMessageId || randomUUID(), type: 'userMessage', content: params.input })
+    if (params.input[0]?.text !== '已接收但不写入记录的补充消息') item(thread, turn, { id: params.clientUserMessageId || randomUUID(), type: 'userMessage', content: params.input })
     respond({ turnId: turn.id })
   } else if (request.method === 'test/hold') {
     if (params.hold) held.add(params.threadId)
-    else { held.delete(params.threadId); loaded.delete(params.threadId); mcpServers.delete(params.threadId) }
+    else { held.delete(params.threadId); loaded.delete(params.threadId); mcpServers.delete(params.threadId); teamMcpServers.delete(params.threadId) }
     respond({})
   } else if (request.method === 'test/linger') {
     const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{}); process.send("ready"); setInterval(()=>{},1000)'], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })

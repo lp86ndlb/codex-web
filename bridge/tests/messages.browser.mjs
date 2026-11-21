@@ -87,6 +87,35 @@ try {
   assert.equal(await input.inputValue(), '')
   await page.locator('.user-message').hover(); await page.screenshot({ path: resolve(output, 'messages-desktop.png'), fullPage: true })
 
+  // A supplemental message can be acknowledged just as the running turn
+  // finishes, without the native conversation ever echoing the message.
+  await bridge.message(id, { text: '等待补充消息测试', mode: 'read-only' })
+  const supplemental = page.getByRole('button', { name: '补充指令', exact: true })
+  await supplemental.waitFor()
+  const missing = '已接收但不写入记录的补充消息'
+  await input.fill(missing); await input.press('Enter')
+  const delivery = page.locator('.message-delivery')
+  await delivery.getByText('消息已提交，正在检查它是否出现在对话里…').waitFor()
+  await input.fill('本轮结束后继续的新草稿')
+  assert.equal(await supplemental.isEnabled(), false)
+  await rpc.call('test/finish', { threadId: id })
+  await delivery.getByText(/未出现在对话记录里/).waitFor()
+  await page.reload(); await page.getByText('本地引擎已连接', { exact: true }).waitFor()
+  await delivery.getByText(/未出现在对话记录里/).waitFor()
+  const send = page.getByRole('button', { name: '发送消息', exact: true })
+  assert.equal(await send.isEnabled(), true)
+  assert.equal(await input.inputValue(), '本轮结束后继续的新草稿')
+  assert.equal(await page.locator('.user-bubble').filter({ hasText: missing }).count(), 0, 'Unconfirmed history must not look like a recorded user message')
+  await page.screenshot({ path: resolve(output, 'messages-unrecorded.png'), fullPage: true })
+  await send.click()
+  await until(() => bridge.threads.get(id).items.some(item => item.text === '本轮结束后继续的新草稿'))
+  await until(async () => await delivery.count() === 1)
+  page.once('dialog', dialog => dialog.accept())
+  await delivery.getByRole('button', { name: '恢复草稿', exact: true }).click()
+  assert.equal(await input.inputValue(), missing)
+  assert.equal(bridge.threads.get(id).items.some(item => item.text === missing), false, 'Recovering a draft must never send it again')
+  await input.fill('')
+
   // Keep the final review bounded: light/dark, narrow viewport, and settings.
   await page.setViewportSize({ width: 390, height: 844 })
   await until(async () => await page.locator('.sidebar').evaluate(node => node.getBoundingClientRect().right <= 0), 'The mobile sidebar did not finish retracting')
@@ -101,7 +130,7 @@ try {
   await page.locator('.settings-dialog[open]').waitFor({ state: 'hidden' })
   await page.setViewportSize({ width: 1440, height: 900 }); await page.screenshot({ path: resolve(output, 'messages-light.png'), fullPage: true })
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ optimisticSend: true, nextDraftRetained: true, nativeEchoOnce: true, failureRecovery: true, copy: true, editCancel: true, nativeHistoryReverted: true, mobileAndLight: true, presetsInSettings: 5, pageErrors: errors }))
+  console.log(JSON.stringify({ optimisticSend: true, nextDraftRetained: true, nativeEchoOnce: true, failureRecovery: true, unrecordedMessageRecovery: true, copy: true, editCancel: true, nativeHistoryReverted: true, mobileAndLight: true, presetsInSettings: 5, pageErrors: errors }))
 } catch (error) {
   await page.screenshot({ path: resolve(output, 'messages-failure.png'), fullPage: true }).catch(() => {})
   throw error

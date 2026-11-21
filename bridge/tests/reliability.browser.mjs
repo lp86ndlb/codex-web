@@ -87,7 +87,7 @@ try {
   let acceptedStatus
   await page.route('**/api/threads/*/message', async route => { acceptedStatus = (await route.fetch()).status(); await route.abort('failed') })
   await input.fill('回执丢失仍只执行一次'); await input.press('Enter')
-  await page.getByText(/提交结果待核对/).waitFor()
+  await page.getByText('暂时无法确认消息是否送达。', { exact: true }).waitFor()
   assert.equal(acceptedStatus, 200, 'This scenario must lose an accepted submission acknowledgement')
   const writes = (await calls('turn/start')).length
   await page.screenshot({ path: resolve(output, 'reliability-unknown-result.png'), fullPage: true })
@@ -130,13 +130,28 @@ try {
   assert.ok(bridge.threads.get(one.id).items.some(item => item.text === '回执丢失仍只执行一次'))
   const fork = [...bridge.threads.values()].find(row => row.forkedFromId === one.id)
   assert.ok(fork); assert.ok(!fork.items.some(item => item.text === '回执丢失仍只执行一次'))
+  const forkInput = page.getByRole('textbox', { name: '发送给 Codex 的消息', exact: true })
+  await forkInput.fill('来源归档后分支独立继续')
+  await bridge.archive(one.id)
+  await page.getByRole('button', { name: '查看来源话题', exact: true }).waitFor({ state: 'hidden' })
+  assert.equal(await forkInput.inputValue(), '来源归档后分支独立继续', 'Archiving the source preserves the branch draft')
+  await forkInput.press('Enter')
+  await page.locator('.user-bubble').filter({ hasText: '来源归档后分支独立继续' }).waitFor()
+  await page.locator('.composer[data-running]').waitFor({ state: 'hidden' })
+  assert.equal(bridge.threads.get(fork.id).forkedFromId, one.id, 'Native provenance stays intact while the unavailable shortcut is hidden')
+  assert.ok(bridge.threads.get(fork.id).items.some(item => item.text === '来源归档后分支独立继续'))
+  await page.screenshot({ path: resolve(output, 'fork-archived-source-independent.png'), fullPage: true })
+  await bridge.restore(one.id)
+  await page.getByRole('button', { name: '查看来源话题', exact: true }).waitFor()
+  results.archivedSourceIndependent = true
   await page.getByRole('button', { name: '分支与原生审查', exact: true }).click()
   await page.getByRole('button', { name: '原生审查', exact: true }).click()
   await page.getByRole('button', { name: '开始审查', exact: true }).click()
   await page.getByText('原生审查测试：已检查指定范围。', { exact: true }).waitFor()
   results.nativeForkAndReview = true
 
-  await page.getByRole('button', { name: '查看连接与诊断', exact: true }).click()
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page.getByRole('navigation', { name: '设置分类', exact: true }).getByRole('button', { name: '连接与诊断', exact: true }).click()
   await page.getByRole('button', { name: '运行网络诊断', exact: true }).click()
   await page.getByText('网络诊断已完成', { exact: true }).waitFor()
   await page.getByText('查看脱敏诊断详情', { exact: true }).click()

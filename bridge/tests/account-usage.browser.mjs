@@ -29,6 +29,19 @@ try {
   await popup.getByText('剩余 65%', { exact: true }).waitFor()
   assert.equal(await popup.getByRole('progressbar', { name: '5 小时额度', exact: true }).getAttribute('aria-valuenow'), '65')
   await page.screenshot({ path: resolve(output, 'account-usage-success.png'), fullPage: true })
+  const trigger = page.getByRole('button', { name: '查看额度', exact: true })
+  for (let i = 0; i < 3; i++) {
+    await trigger.click(); await popup.waitFor({ state: 'hidden' })
+    await page.locator('.usage-trigger[aria-expanded="false"]').waitFor()
+    assert.equal(await trigger.getAttribute('aria-expanded'), 'false', 'A second click must close instead of immediately reopening')
+    await trigger.click(); await popup.getByRole('progressbar').first().waitFor()
+  }
+  await trigger.focus(); await page.keyboard.press('Space'); await popup.waitFor({ state: 'hidden' })
+  await page.keyboard.press('Enter'); await popup.getByRole('progressbar').first().waitFor()
+  await page.keyboard.press('Escape'); await popup.waitFor({ state: 'hidden' })
+  await trigger.click(); await popup.waitFor()
+  await page.locator('.brand').click(); await popup.waitFor({ state: 'hidden' })
+  await trigger.click(); await popup.getByRole('progressbar').first().waitFor()
   failed = true; const before = usageReads
   await popup.getByRole('button', { name: '刷新', exact: true }).click()
   await popup.getByText(/上次成功读取/).waitFor()
@@ -40,6 +53,6 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
   await page.screenshot({ path: resolve(output, 'account-usage-mobile.png'), fullPage: true })
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ usageVisible: true, backgroundPollParams: true, transientRetryBounded: true, sameAccountCachedUsageVisible: true, noDuplicateEmptyState: true, mobile: true, pageErrors: errors }))
+  console.log(JSON.stringify({ usageVisible: true, repeatedTriggerToggle: true, keyboardToggle: true, lightDismiss: true, backgroundPollParams: true, transientRetryBounded: true, sameAccountCachedUsageVisible: true, noDuplicateEmptyState: true, mobile: true, pageErrors: errors }))
 } catch (error) { await page.screenshot({ path: resolve(output, 'account-usage-failure.png'), fullPage: true }).catch(() => {}); throw error }
 finally { await browser.close(); await app.close(); await rm(root, { recursive: true, force: true }) }

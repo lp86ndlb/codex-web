@@ -1,0 +1,82 @@
+/* Leave conversation context visible while questions, drafts and attachments
+   share the dock. Long content scrolls inside its own area. */
+.app { overflow: clip; }
+.composer-dock { display: flex; flex-direction: column; max-height: clamp(58%, calc(58% + (var(--ui-font-size) - 14px) * 8 + (var(--chat-font-size) - 16px) * 4), 68%); }
+.composer-region { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; padding-top: 6px; padding-bottom: 10px; }
+.composer-region > :not(.composer-support) { flex-shrink: 0; }
+.composer-support { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; overscroll-behavior: contain; flex: 0 1 auto; scrollbar-width: thin; }
+.composer-support:empty { display: none; }
+.question-panel-scroll { max-height: min(27dvh, 280px); }
+.composer-support > .choice-dock, .composer-support > .approval-stack { display: flex; flex-direction: column; min-height: 0; flex-shrink: 1; }
+.question-panel { display: flex; flex-direction: column; min-height: 0; }
+.question-panel-heading { flex-shrink: 0; }
+.question-panel-body { min-height: 0; flex: 1 1 auto; }
+.question-panel-body > div { display: flex; min-height: 0; }
+.question-panel-scroll { min-height: 0; width: 100%; }
+.question-panel-scroll:has(.question-fields) { display: flex; overflow: hidden; }
+.question-panel .approval-card:has(.question-fields) { display: flex; flex-direction: column; min-height: 0; width: 100%; }
+.question-fields { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.question-panel .approval-title, .question-panel .question-navigation { flex-shrink: 0; }
+.question-panel .approval-card { padding-bottom: 8px; }
+.question-panel .choice-question, .question-panel .questionnaire legend { font-size: var(--chat-font-size); line-height: 1.45; padding-bottom: 7px; }
+.question-panel .answer-choice { min-height: 34px; padding: 6px 9px; }
+.question-panel .question-navigation, .question-panel .approval-actions { margin-top: 6px; padding-top: 5px; }
+.question-panel .question-navigation { position: static; }
+.question-navigation > button { padding-block: 5px; }
+.compact-composer textarea { max-height: min(220px, 23dvh); }
+.composer-region:has(.question-panel) .compact-composer textarea { max-height: min(120px, 15dvh); }
+.composer-region:has(.question-panel) .compact-composer textarea:placeholder-shown { field-sizing: fixed; height: calc(var(--chat-font-size) * 1.6 + 21px); }
+.composer-region:has(.question-panel) .composer-options { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.composer-region:has(.question-panel) .composer-options > * { flex-shrink: 0; }
+.draft-attachments { max-height: min(110px, 13dvh); }
+.choice-summary { padding: 9px 11px; }
+.choice-summary strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.file-preview-document .markdown { font-size: var(--chat-font-size); }
+.compact-workspaces .thread-link { height: auto; min-height: 32px; }
+.compact-workspaces .thread-link > div > span { line-height: 1.5; }
+.settings-connection { position: relative; display: inline-flex; }
+.settings-connection[data-connected='false']::after { content: ''; position: absolute; right: 3px; top: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); pointer-events: none; }
+.connection-status-text { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.sidebar-bottom { padding-top: 5px; }
+/* The preferred width survives viewport changes; the grid always leaves at
+   least 360px for the conversation. GenUI keeps its own independent sizing. */
+.app { --inspector-sidebar-space: var(--sidebar-width, 276px); --inspector-width: clamp(280px, var(--inspector-preferred-width, 340px), min(640px, calc(100vw - var(--inspector-sidebar-space) - 360px))); }
+.app.sidebar-collapsed { --inspector-sidebar-space: 0px; }
+.inspector { position: relative; }
+.inspector-header { padding-inline: 12px; }
+.inspector-header .tabs { gap: clamp(8px, 1vw, 16px); min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: none; }
+.inspector-header .tabs > button { flex-shrink: 0; white-space: nowrap; }
+.inspector-resize { position: absolute; z-index: 5; left: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; touch-action: none; }
+.inspector-resize::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: transparent; transition: background .15s; }
+.inspector-resize:hover::after, .inspector-resize:focus-visible::after, .app[data-inspector-resizing] .inspector-resize::after { background: var(--accent); }
+.app[data-inspector-resizing] { transition: none; cursor: col-resize; user-select: none; }
+.app:has(.inspector-resize:focus-visible) { transition: none; }
+.main { container: workspace-main / inline-size; }
+.breadcrumb > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@container workspace-main (max-width: 680px) {
+  .topbar { height: auto; min-height: 64px; padding: 8px 14px; gap: 6px; flex-wrap: wrap; }
+  .topbar-actions { flex-basis: 100%; justify-content: flex-end; gap: 2px; min-width: 0; }
+  .topbar-actions .icon-button { flex: 0 0 28px; width: 28px; }
+  .breadcrumb { overflow: hidden; }
+}
+@media (min-width: 1181px) {
+  .app:has(> .inspector) { grid-template-columns: var(--inspector-sidebar-space) minmax(360px, 1fr) var(--inspector-width); }
+}
+@media (min-width: 761px) and (max-width: 1180px) {
+  .inspector { position: absolute; width: clamp(280px, var(--inspector-preferred-width, 340px), min(640px, 100vw)); }
+}
+@media (max-width: 760px) {
+  .inspector { position: absolute; width: min(360px, 100vw); }
+  .inspector-resize { display: none; }
+}
+@media (max-height: 720px) {
+  .sidebar { padding-top: 12px; }
+  .brand { padding-bottom: 12px; }
+  .search { margin-bottom: 12px; }
+  .question-panel-heading { padding-block: 5px; }
+  .composer-region { padding-bottom: 8px; }
+}
+@media (max-height: 500px) {
+  .composer-dock { max-height: 70%; }
+  .compact-composer textarea { min-height: 40px; max-height: 15dvh; }
+}

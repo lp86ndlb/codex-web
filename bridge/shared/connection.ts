@@ -1,5 +1,9 @@
-export type FailureKind = 'authentication' | 'quota' | 'context' | 'network' | 'permission' | 'unknown'
+import { contentRestriction } from './model-errors.ts'
+
+export type FailureKind = 'authentication' | 'quota' | 'context' | 'network' | 'permission' | 'content' | 'unknown'
 export function classifyFailure(message = ''): { kind: FailureKind; title: string; next: string } {
+  const restriction = contentRestriction(message)
+  if (restriction) return { kind: 'content', title: restriction.title, next: restriction.message }
   if (/401|unauthori[sz]ed|authentication|invalid.api.key|token.*expired/i.test(message)) return { kind: 'authentication', title: '认证需要处理', next: '检查 CLI 登录或模型服务凭据，再核对本轮状态。' }
   if (/429|rate.?limit|quota|usage.limit|insufficient.*credit/i.test(message)) return { kind: 'quota', title: '额度或速率受限', next: '查看额度与重置时间；不要连续重试。' }
   if (/context.{0,20}(length|window|limit|exceed)|maximum.*token|too.many.tokens/i.test(message)) return { kind: 'context', title: '上下文容量不足', next: '等当前任务结束后压缩上下文，或从摘要接续新话题。' }

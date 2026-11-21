@@ -49,6 +49,11 @@ try {
   await add.click(); await input.click(); assert.equal(await add.getAttribute('aria-expanded'), 'false')
 
   await input.fill('等待光条验证'); await input.press('Enter'); await page.locator('.composer[data-running]').waitFor()
+  // The composer now shows optimistic sending before the native session exists.
+  // Wait for its actual turn before addressing the session's todo plugin.
+  const startedBy = Date.now() + 5000
+  while (!bridge.list().some(row => bridge.threads.get(row.id)?.turnId) && Date.now() < startedBy) await page.waitForTimeout(30)
+  assert.ok(bridge.list().some(row => bridge.threads.get(row.id)?.turnId), 'The native conversation must have started')
   const primary = bridge.list()[0].id
   await bridge.plugin.call(primary, 'todo_note_update', { focus: { current: '验证当前任务脉冲' }, add_tasks: [{ title: '验证当前任务脉冲' }, { title: '验证脉冲随任务切换' }] })
   const working = page.locator('.dtn-card .dtn-task[data-working="true"][data-task-id]')

@@ -33,6 +33,20 @@ test('side effects, final replies, approvals, external ownership and large conte
   assert.equal(recoveryPolicy({ ...failed(), contextUsage: { inputTokens: 350_000, windowTokens: 475_000, updatedAt: 1 } }, 'failed').allowed, false)
 })
 
+test('upstream cybersecurity/content restrictions never retry, including mixed transport text and already executed tools', () => {
+  const error = 'Stream disconnected before completion: Your request was flagged for possible cybersecurity risk.'
+  const thread = failed(error)
+  const plain = recoveryPolicy(thread, 'failed')
+  assert.equal(plain.allowed, false)
+  assert.match(plain.message, /上游模型报告内容安全拦截/)
+  assert.match(plain.message, /无法确定触发内容/)
+  for (let i = 0; i < 43; i++) thread.items.push({ id: `tool-${i}`, turnId: 'failed', type: 'commandExecution', status: 'completed', text: 'fixture' })
+  const afterExecution = recoveryPolicy(thread, 'failed')
+  assert.equal(afterExecution.allowed, false)
+  assert.equal(afterExecution.message, plain.message, 'Show the precise reported reason without blaming the first message')
+  assert.equal(thread.error, error, 'Classification must not replace the original error')
+})
+
 test('only model output or a newly started tool marks response recovery, not a heartbeat or user echo', () => {
   assert.equal(hasRecoveryOutput('item/agentMessage/delta', { delta: 'Recovered response' }), true)
   assert.equal(hasRecoveryOutput('item/agentMessage/delta', { delta: ' ' }), false)

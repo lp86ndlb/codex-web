@@ -1,0 +1,30 @@
+/* Review prose fits the sidebar without changing chat or graph typography. */
+.team-bulk-approval { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 8px; padding: 6px 0; background: var(--surface); font-size: .8rem; color: var(--muted); }
+.team-bulk-approval .team-primary { padding: 6px 8px; }
+.team-approvals .team-task-select { width: 15px; height: 15px; margin: 0 8px 0 0; vertical-align: -2px; accent-color: var(--accent); cursor: pointer; }
+.team-review-body.team-review-markdown { min-width: 0; max-width: 100%; white-space: normal; font-size: .9rem; }
+.team-review-markdown .markdown { min-width: 0; max-width: 100%; font-size: inherit; line-height: 1.7; overflow-wrap: anywhere; }
+.team-review-markdown .markdown > :first-child { margin-top: 0; }
+.team-review-markdown .markdown > :last-child { margin-bottom: 0; }
+.team-review-markdown .markdown :is(h1,h2,h3,h4,h5,h6) { margin: 1em 0 .45em; line-height: 1.45; font-weight: 600; color: var(--ink); }
+.team-review-markdown .markdown h1 { font-size: 1.17em; }
+.team-review-markdown .markdown h2 { font-size: 1.1em; }
+.team-review-markdown .markdown :is(h3,h4,h5,h6) { font-size: 1em; }
+.team-review-markdown .markdown p { margin: .55em 0; }
+.team-review-markdown .markdown :is(ul,ol) { margin: .65em 0; padding-left: 1.4em; }
+.team-review-markdown .markdown li + li { margin-top: .35em; }
+.team-review-markdown .markdown li > p { margin: .3em 0; }
+.team-review-markdown .markdown li::marker { color: var(--muted); }
+.team-review-markdown .markdown strong { color: var(--ink); }
+.team-review-markdown .markdown blockquote { margin: .75em 0; padding-left: .75em; }
+.team-review-markdown .markdown :not(pre) > code { font-size: .92em; overflow-wrap: anywhere; }
+.team-review-markdown .markdown .genui-code { min-width: 0; max-width: 100%; margin: .8em 0; border-radius: 7px; }
+.team-review-markdown .markdown .genui-code > .code-actions { flex-wrap: wrap; gap: 2px 8px; padding: 5px 7px; font-size: .83em; }
+.team-review-markdown .markdown .code-actions > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.team-review-markdown .markdown .code-actions button { font-size: inherit; padding: 3px 4px; }
+.team-review-markdown .markdown pre { max-width: 100%; padding: 9px 10px; font-size: .88em; line-height: 1.65; }
+.team-review-markdown .markdown table { max-width: 100%; margin: .75em 0; }
+.team-review-markdown .markdown :is(th,td) { padding: 5px 7px; }
+.team-review-markdown .markdown a.local-file-link { max-width: 100%; margin: 2px 0; padding: 2px 6px; font-size: .94em; }
+.team-review-markdown .markdown img { max-height: 240px; border-radius: 7px; margin: .6em 0; }
+.team-review-markdown .markdown hr { margin: 1em 0; border: 0; border-top: 1px solid var(--line); }

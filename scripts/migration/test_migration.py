@@ -96,7 +96,7 @@ class MigrationTests(unittest.TestCase):
             rollout = codex / 'sessions/rollout-test.jsonl'
             rollout.parent.mkdir(parents=True)
             first = b'{"type":"session_meta","payload":{"cwd":"/old/app"}}\n'
-            last = b'{"type":"event_msg","payload":{"text":"/old/app/file.txt"}}\n'
+            last = b'{"type":"event_msg","payload":{"text":"/old/app/file.txt","library":"/old/.codex"}}\n'
             rollout.write_bytes(first + last)
             with database(codex / 'state_5.sqlite') as db:
                 db.execute('CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT)')
@@ -115,7 +115,7 @@ class MigrationTests(unittest.TestCase):
                 for path in source.rglob('*'):
                     if path.is_file():
                         archive.add(path, arcname=str(path.relative_to(source)))
-            write_json(private / 'manifest.json', {'architecture':'x86_64','sourceRoot':'/old/app','sourceCodexHome':'/old/.codex','sourceHome':'/old','sourceNodeRoot':'/old/node','developerThread':'developer','sha256':{'.migration/snapshot.tar.gz':digest(private / 'snapshot.tar.gz')},'executables':[],'symlinks':{}})
+            write_json(private / 'manifest.json', {'architecture':'x86_64','sourceRoot':'/old/app','sourceCodexHome':'/old/native-library','sourceCodexAliases':['/old/.codex'],'sourceHome':'/old','sourceNodeRoot':'/old/node','developerThread':'developer','sha256':{'.migration/snapshot.tar.gz':digest(private / 'snapshot.tar.gz')},'executables':[],'symlinks':{}})
             with patch.dict(os.environ, {'HOME': str(parent / 'new-home')}):
                 result = restore(root, use_target_login=False)
                 self.assertEqual(result['sessions'], 1)
@@ -126,7 +126,9 @@ class MigrationTests(unittest.TestCase):
                 offset, end, status = db.execute('SELECT rollout_byte_offset,rollout_end_byte_offset,status FROM thread_turns').fetchone()
             with restored.open('rb') as stream:
                 stream.seek(offset)
-                self.assertEqual(json.loads(stream.readline())['payload']['text'], str(root) + '/file.txt')
+                payload = json.loads(stream.readline())['payload']
+                self.assertEqual(payload['text'], str(root) + '/file.txt')
+                self.assertEqual(payload['library'], str(private / 'codex'))
             self.assertEqual(end, restored.stat().st_size)
             self.assertEqual(status, 'interrupted')
             self.assertEqual((root / 'bridge/.data/attachments/id/file-malformed.json').read_bytes(), upload.read_bytes())

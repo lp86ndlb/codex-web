@@ -3,9 +3,11 @@ import { ArrowUpRight, ChevronDown, Folder, GripVertical, MessageSquare, MoreHor
 import type { Approval, ThreadSummary, WorkspaceInfo } from '../shared/types.ts'
 import type { ActivityView } from '../shared/types.ts'
 import { appendNavigation, moveNavigation, navigationKey, orderedNavigation, readNavigation, threadReadEvent, unreadCompletion } from '../shared/navigation-order.ts'
+import { threadStatus } from '../shared/thread-activity.ts'
 import { IconButton } from './components.tsx'
 import { StateDot } from './dsh/StateDot.tsx'
 import type { ThreadMenuTarget } from './ThreadMenu.tsx'
+import type { WorkspaceMenuTarget } from './WorkspaceMenu.tsx'
 export function workspaceFor(workspaces: WorkspaceInfo[], path: string) {
   return workspaces.filter(row => path === row.path || path.startsWith(row.path.replace(/\/$/, '') + '/')).sort((a, b) => b.path.length - a.path.length)[0]
 }
@@ -13,6 +15,7 @@ interface GroupProps {
   workspaces: WorkspaceInfo[]; threads: ThreadSummary[]; selected: string | null; workspaceId?: string; views: Record<string, ActivityView>; approvals: Approval[]; busy: boolean; search: string
   onChoose: (id: string) => void; onNew: (id: string) => void; onRename: (workspace: WorkspaceInfo) => void
   menuThreadId?: string; onThreadMenu: (target: ThreadMenuTarget, toggle?: boolean) => void
+  onWorkspaceMenu?: (target: WorkspaceMenuTarget) => void
   reveal?: { id: string; seq: number }
 }
 type Drag = { kind: 'workspace' | 'thread'; id: string; scope: string }
@@ -122,12 +125,13 @@ export const WorkspaceGroups = memo(function WorkspaceGroups(p: GroupProps) {
     if (query && !groupMatch && !matching.length) return null
     const folded = layout.collapsed[workspace.id] ?? false; const limit = limits[workspace.id] || 25
     return <section className={`workspace-group ${active ? 'active-workspace' : ''}`} key={workspace.id} data-workspace-id={workspace.id} data-dragging={dragging?.kind === 'workspace' && dragging.id === workspace.id || undefined} data-drop={drop?.kind === 'workspace' && drop.id === workspace.id ? drop.after ? 'after' : 'before' : undefined} onDragOver={event => over(event, source)} onDrop={event => dropped(event, source)}>
-      <div className="group-heading"><button className="workspace-toggle" title={`${workspace.path} · 拖拽排序，Alt ↑ / ↓ 微调`} aria-expanded={!folded} draggable={!p.busy} onDragStart={event => start(event, source)} onDragEnd={finishDrag} onKeyDown={event => keyboard(event, source)} onClick={() => { if (!suppressClick.current) setLayout(previous => ({ ...previous, collapsed: { ...previous.collapsed, [workspace.id]: !folded } })) }}><GripVertical size={12} className="navigation-grip" /><ChevronDown size={13} className={folded ? 'folded' : ''} /><Folder size={16} /><span>{workspace.name}</span><small>{query ? matching.length : rows.length}</small></button>
+      <div className="group-heading" onContextMenu={event => { if (!p.onWorkspaceMenu) return; event.preventDefault(); event.stopPropagation(); p.onWorkspaceMenu({ workspaceId: workspace.id, x: event.clientX, y: event.clientY, trigger: event.currentTarget.querySelector<HTMLElement>('.workspace-toggle')! }) }}><button className="workspace-toggle" title={`${workspace.path} · 拖拽排序，Alt ↑ / ↓ 微调`} aria-expanded={!folded} draggable={!p.busy} onDragStart={event => start(event, source)} onDragEnd={finishDrag} onKeyDown={event => { if (p.onWorkspaceMenu && (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10')) { event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); p.onWorkspaceMenu({ workspaceId: workspace.id, x: box.left + 20, y: box.bottom, trigger: event.currentTarget }) } else keyboard(event, source) }} onClick={() => { if (!suppressClick.current) setLayout(previous => ({ ...previous, collapsed: { ...previous.collapsed, [workspace.id]: !folded } })) }}><GripVertical size={12} className="navigation-grip" /><ChevronDown size={13} className={folded ? 'folded' : ''} /><Folder size={16} /><span>{workspace.name}</span><small>{query ? matching.length : rows.length}</small></button>
+        {p.onWorkspaceMenu && <button type="button" className="icon-button" aria-label={`工作区菜单 ${workspace.name}`} onClick={event => { const box = event.currentTarget.getBoundingClientRect(); p.onWorkspaceMenu!({ workspaceId: workspace.id, x: box.right, y: box.bottom, trigger: event.currentTarget }) }}><MoreHorizontal size={14} /></button>}
         <IconButton label={`重命名工作区 ${workspace.name}`} onClick={() => p.onRename(workspace)}><Pencil size={13} /></IconButton><IconButton label={`在 ${workspace.name} 新建会话`} disabled={p.busy} onClick={() => p.onNew(workspace.id)}><Plus size={15} /></IconButton>
       </div>
       <div className="group-thread-fold" data-open={!folded || undefined} {...(folded ? { inert: '' } : {})}><div><div className="group-threads">{matching.slice(0, limit).map(row => {
         const source: Drag = { kind: 'thread', id: row.id, scope: workspace.id }
-        const status = p.views[row.id]?.status || row.status; const waiting = row.attention || p.views[row.id]?.choicePending || p.approvals.some(approval => approval.threadId === row.id)
+        const status = threadStatus(row, p.views[row.id]); const waiting = row.attention || p.views[row.id]?.choicePending || p.approvals.some(approval => approval.threadId === row.id)
         const state = waiting ? 'warning' : status === 'inProgress' ? 'ongoing' : status === 'completed' && unreadCompletion(row, p.views[row.id], layout.read[row.id]) ? 'done' : status === 'failed' ? 'error' : undefined
         const label = waiting ? '等待你的选择' : status === 'inProgress' ? '正在执行' : status === 'completed' ? '任务已完成' : '执行失败'
         const menuOpen = p.menuThreadId === row.id
@@ -148,7 +152,7 @@ export const WorkspaceGroups = memo(function WorkspaceGroups(p: GroupProps) {
       })}{matching.length > limit && <button className="group-more" onClick={() => setLimits(old => ({ ...old, [workspace.id]: limit + 25 }))}>更多会话 · {matching.length - limit}</button>}</div></div></div>
     </section>
   })}{!p.workspaces.length && <div className="sidebar-empty">添加一个项目，开始你的第一个会话。</div>}{query && !p.workspaces.some(w => `${w.name} ${w.path}`.toLocaleLowerCase().includes(query)) && !p.threads.some(t => t.title.toLocaleLowerCase().includes(query)) && <div className="sidebar-empty">没有匹配的工作区或会话</div>}</nav>
-}, (a, b) => a.menuThreadId === b.menuThreadId && a.onThreadMenu === b.onThreadMenu && a.workspaces === b.workspaces && a.threads === b.threads && a.selected === b.selected && a.reveal === b.reveal && a.views[a.reveal?.id || '']?.cwd === b.views[b.reveal?.id || '']?.cwd && a.workspaceId === b.workspaceId && a.busy === b.busy && a.search === b.search && a.approvals === b.approvals && a.threads.every(row => a.views[row.id]?.status === b.views[row.id]?.status && a.views[row.id]?.choicePending === b.views[row.id]?.choicePending))
+}, (a, b) => a.menuThreadId === b.menuThreadId && a.onThreadMenu === b.onThreadMenu && a.workspaces === b.workspaces && a.threads === b.threads && a.selected === b.selected && a.reveal === b.reveal && a.views[a.reveal?.id || '']?.cwd === b.views[b.reveal?.id || '']?.cwd && a.workspaceId === b.workspaceId && a.busy === b.busy && a.search === b.search && a.approvals === b.approvals && a.threads.every(row => threadStatus(row, a.views[row.id]) === threadStatus(row, b.views[row.id]) && a.views[row.id]?.choicePending === b.views[row.id]?.choicePending))
 export function WorkspaceHome({ workspaces, threads, onOpen, onAdd, onThread }: {
   workspaces: WorkspaceInfo[]; threads: ThreadSummary[]; onOpen: (id: string) => void; onAdd: () => void; onThread: (id: string) => void
 }) {

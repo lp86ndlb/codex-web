@@ -23,6 +23,7 @@ await writeFile(resolve(workspace, 'hello.ts'), 'export const greeting = "你好
 await mkdir(resolve(workspace, 'src')); await writeFile(resolve(workspace, 'src/math.ts'), 'export const one = 1\n')
 const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd: workspace, env: { ...process.env, FAKE_STORE: resolve(root, 'sessions.json') } })
 const bridge = new Bridge(rpc, new Workspace(workspace), resolve(root, 'codex-home'))
+await bridge.updatePreferences({ todoPlacement: 'floating', showInspector: false })
 const app = createHttpServer({ bridge, dist: resolve(process.env.CWEB_TEST_DIST || 'dist') })
 await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${app.server.address().port}`

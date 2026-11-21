@@ -65,7 +65,7 @@ export class ConnectionDiagnostics {
   async snapshot(): Promise<ConnectionSnapshot> {
     if (!this.versionRead) this.versionRead = this.run(['--version'], AbortSignal.timeout(3000)).then(({ output }) => { this.installedVersion = /codex(?:-cli)?\s+([^\s]+)/i.exec(output)?.[1] }).catch(() => {})
     await this.versionRead
-    return { checkedAt: Date.now(), bridge: { version: '0.3.0', build: this.build, startedAt: this.startedAt, node: process.version }, engine: { state: this.rpc.status.state, shared: this.rpc.sharedEngine, userAgent: this.rpc.status.userAgent, connectedAt: this.rpc.status.connectedAt, installedVersion: this.installedVersion }, events: [...this.events].reverse(), report: structuredClone(this.report) }
+    return { checkedAt: Date.now(), bridge: { version: '0.4.0', build: this.build, startedAt: this.startedAt, node: process.version }, engine: { state: this.rpc.status.state, shared: this.rpc.sharedEngine, userAgent: this.rpc.status.userAgent, connectedAt: this.rpc.status.connectedAt, installedVersion: this.installedVersion }, events: [...this.events].reverse(), report: structuredClone(this.report) }
   }
   start() {
     if (this.controller) return

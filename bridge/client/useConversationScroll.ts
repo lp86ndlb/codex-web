@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject, type RefObject } from 'react'
 
 /** Follow only while the reader stays at the bottom; layout growth is not a user scroll. */
-export function useConversationScroll(viewport: RefObject<HTMLDivElement>, content: RefObject<HTMLDivElement>, follow: MutableRefObject<boolean>, threadId: string | null, dock: RefObject<HTMLDivElement>) {
+export function useConversationScroll(viewport: RefObject<HTMLDivElement>, content: RefObject<HTMLDivElement>, follow: MutableRefObject<boolean>, threadId: string | null, dock: RefObject<HTMLDivElement>, enabled = true) {
   const [away, setAway] = useState(false)
   const intention = useRef({ direction: 0, at: 0 })
   const pause = useCallback(() => { follow.current = false; intention.current.direction = 0 }, [])
   const jump = useCallback(() => { intention.current.direction = 0; follow.current = true; setAway(false); const node = viewport.current; if (node) node.scrollTop = node.scrollHeight }, [])
   useEffect(() => {
+    if (!enabled) return
     const node = viewport.current; const body = content.current
     if (!node || !body) return
     node.style.removeProperty('scroll-padding-bottom')
@@ -62,6 +63,6 @@ export function useConversationScroll(viewport: RefObject<HTMLDivElement>, conte
     document.addEventListener('pointerup', release); document.addEventListener('pointercancel', release)
     document.addEventListener('keydown', keyboard); schedule()
     return () => { cancelAnimationFrame(frame); resize.disconnect(); node.removeEventListener('scroll', scroll); node.removeEventListener('wheel', wheel); node.removeEventListener('touchstart', touchStart); node.removeEventListener('touchmove', touch); node.removeEventListener('pointerdown', pointer); document.removeEventListener('pointerup', release); document.removeEventListener('pointercancel', release); document.removeEventListener('keydown', keyboard) }
-  }, [threadId])
+  }, [threadId, enabled])
   return { away, jump, pause }
 }

@@ -4,7 +4,7 @@ import { Check } from 'lucide-react'
 import { Presence } from './Motion.tsx'
 
 /** A select-only combobox: browser-native pickers cannot animate their exit. */
-export function ComposerSelect({ label, value, options, onChange, icon, className, title }: { label: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void; icon?: ReactNode; className?: string; title?: string }) {
+export function ComposerSelect({ label, value, options, onChange, icon, className, title }: { label: string; value: string; options: { value: string; label: string; badge?: string }[]; onChange: (value: string) => void; icon?: ReactNode; className?: string; title?: string }) {
   const id = useId(); const trigger = useRef<HTMLButtonElement>(null); const popup = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false); const [active, setActive] = useState(0); const [position, setPosition] = useState<CSSProperties>({})
   const typeahead = useRef({ text: '', at: 0 })
@@ -56,6 +56,6 @@ export function ComposerSelect({ label, value, options, onChange, icon, classNam
       const now = performance.now(); typeahead.current = { text: now - typeahead.current.at < 700 ? typeahead.current.text + event.key : event.key, at: now }
       const index = options.findIndex(option => option.label.toLocaleLowerCase().includes(typeahead.current.text.toLocaleLowerCase())); if (index >= 0) setActive(index)
     }
-  }}>{icon}<span>{selected?.label || value || label}</span></button>
-  {createPortal(<Presence elementRef={popup} show={open} {...{ popover: 'manual' as const }} id={id} role="listbox" aria-label={`${label}选项`} className="composer-select-popover" style={position} onPointerDown={event => { if ((event.target as Element).closest('[role="option"]')) event.preventDefault() }}>{options.map((option, index) => <button type="button" role="option" aria-selected={option.value === value} id={`${id}-${index}`} tabIndex={-1} data-active={active === index || undefined} key={option.value} onPointerMove={() => setActive(index)} onClick={() => choose(index)}>{option.value === value ? <Check size={15} /> : <span className="select-check-space" />}<span>{option.label}</span></button>)}</Presence>, trigger.current?.closest('dialog') || document.body)}</>
+  }}>{icon}<span>{selected?.label || value || label}</span>{selected?.badge && <small className="composer-default-badge">{selected.badge}</small>}</button>
+  {createPortal(<Presence elementRef={popup} show={open} {...{ popover: 'manual' as const }} id={id} role="listbox" aria-label={`${label}选项`} className="composer-select-popover" style={position} onPointerDown={event => { if ((event.target as Element).closest('[role="option"]')) event.preventDefault() }}>{options.map((option, index) => <button type="button" role="option" aria-selected={option.value === value} id={`${id}-${index}`} tabIndex={-1} data-active={active === index || undefined} key={option.value} onPointerMove={() => setActive(index)} onClick={() => choose(index)}>{option.value === value ? <Check size={15} /> : <span className="select-check-space" />}<span>{option.label}{option.badge && <small className="composer-default-badge">{option.badge}</small>}</span></button>)}</Presence>, trigger.current?.closest('dialog') || document.body)}</>
 }

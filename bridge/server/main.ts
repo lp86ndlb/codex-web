@@ -1,10 +1,11 @@
-import { mkdir, readFile, writeFile, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rename, rm, stat, realpath } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { homedir } from 'node:os'
 import { CodexRpc } from './rpc.ts'
+import { SessionRouter } from './session-router.ts'
 import { Bridge } from './bridge.ts'
 import { WorkspaceCatalog } from './catalog.ts'
 import { createHttpServer } from './http.ts'
@@ -28,26 +29,35 @@ async function main() {
     if (live?.instance === previous.instance) throw new Error(`cweb 已在端口 ${previous.port} 运行。使用 cweb restart 重启。`)
   }
   const sharedHistory = process.env.CWEB_ISOLATED !== '1'
+  const teamPilot = process.env.CWEB_TEAM_PILOT === '1'
+  if (teamPilot && (sharedHistory || !process.env.CWEB_DATA_DIR || data === resolve(appDirectory, '.data') || !values.root || resolve(values.root) !== resolve(data, '..', 'workspace'))) {
+    throw new Error('团队试验必须使用独立数据目录、独立会话库及同目录下的新 workspace；请使用 npm run team:pilot。')
+  }
   const codexHome = sharedHistory ? resolve(process.env.CODEX_HOME || resolve(homedir(), '.codex')) : resolve(data, 'codex-home')
   const tmp = resolve(data, 'tmp')
   await mkdir(codexHome, { recursive: true, mode: 0o700 })
   await mkdir(tmp, { recursive: true, mode: 0o700 })
+  if (teamPilot) for (const path of [data, codexHome, resolve(values.root!)]) {
+    if (await realpath(path) !== path) throw new Error('团队试验路径不可链接到实际数据目录')
+  }
   if (sharedHistory) {
     const imported = await importLegacyHistory(resolve(data, 'codex-home'), codexHome, resolve(data, 'history-import.json'))
     if (imported) console.log(`已将 ${imported} 个原网页会话加入终端原生历史；原始副本保留。`)
   }
   const catalog = new WorkspaceCatalog(resolve(data, 'workspaces.json'))
   await catalog.initialize()
-  if (values.root) await catalog.add(resolve(values.root))
+  if (values.root) await catalog.add(resolve(values.root), teamPilot ? '团队通信试验' : undefined)
+  if (teamPilot && (catalog.list().length !== 1 || catalog.list()[0]?.path !== resolve(values.root!))) throw new Error('团队试验不可包含其他工作区')
   const socketPath = resolve(codexHome, 'app-server-control/app-server-control.sock')
   const sharedSocket = sharedHistory && (await stat(socketPath).catch(() => null))?.isSocket()
   const daemon = sharedSocket ? await readFile(resolve(codexHome, 'app-server-daemon/daemon.pid'), 'utf8').then(JSON.parse).catch(() => ({})) : {}
-  const rpc = new CodexRpc({ ...(sharedSocket ? { socketPath, enginePid: daemon.pid, socketFallback: true } : {}), command: values.codex!, args: ['app-server', '--listen', 'stdio://',
+  const Runtime = sharedHistory ? SessionRouter : CodexRpc
+  const rpc = new Runtime({ ...(sharedSocket ? { socketPath, enginePid: daemon.pid, socketFallback: true } : {}), command: values.codex!, args: ['app-server', '--listen', 'stdio://',
     '-c', 'analytics.enabled=false', '-c', 'thread_unload_delay_secs=0'], cwd: data,
     env: { ...process.env, CODEX_HOME: codexHome, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
       XDG_CACHE_HOME: resolve(data, 'cache'), XDG_DATA_HOME: resolve(data, 'xdg-data'), XDG_CONFIG_HOME: resolve(data, 'xdg-config') },
   })
-  const bridge = new Bridge(rpc, catalog, codexHome, data, sharedHistory)
+  const bridge = new Bridge(rpc, catalog, codexHome, data, sharedHistory, { teamPilot, workspaceTeams: !teamPilot })
   await bridge.initialize()
   const vite = values.dev ? await (await import('vite')).createServer({ root: appDirectory, server: { middlewareMode: true }, appType: 'spa' }) : null
   const instance = randomUUID(); const token = randomBytes(32).toString('hex')
@@ -60,7 +70,7 @@ async function main() {
     const state = await readFile(stateFile, 'utf8').then(JSON.parse).catch(() => null)
     if (state?.instance === instance) await rm(stateFile, { force: true })
   }
-  const app = createHttpServer({ bridge, dist: resolve(appDirectory, 'dist'), devMiddleware: vite?.middlewares,
+  const app = createHttpServer({ bridge, dist: teamPilot && process.env.CWEB_TEAM_PILOT_DIST ? resolve(process.env.CWEB_TEAM_PILOT_DIST) : resolve(appDirectory, 'dist'), devMiddleware: vite?.middlewares,
     control: { instance, token, stop: () => { void stop().catch(error => { console.error(error); process.exitCode = 1 }) } },
   })
   await new Promise<void>((resolve, reject) => { app.server.once('error', reject); app.server.listen(port, '127.0.0.1', resolve) })

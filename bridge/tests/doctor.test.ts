@@ -1,13 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 type Check = { label: string; status: 'ok' | 'warn' | 'error'; detail: string }
-const { runDoctor } = await import(pathToFileURL(resolve('../scripts/doctor.mjs')).href) as {
+const { runDoctor, workspaceCliCheck } = await import(pathToFileURL(resolve('../scripts/doctor.mjs')).href) as {
   runDoctor: (options: { root: string; data: string; write?: (text: string) => void }) => Promise<{ ok: boolean; checks: Check[] }>
+  workspaceCliCheck: (root: string, home: string, options: { proc: string; home: string }) => Promise<Check | null>
 }
 
 async function fixture() {
@@ -122,4 +123,37 @@ test('doctor treats missing, malformed and foreign daemon records as warnings wi
     await close(server)
     await rm(value.root, { recursive: true, force: true })
   }
+})
+
+test('doctor distinguishes a configured workspace from a live terminal still using the old library', async () => {
+  const value = await fixture(), proc = resolve(value.root, 'proc'), library = resolve(value.root, '.migration/codex')
+  const options = { proc, home: value.root }
+  const client = async (pid: number, env: string, cwd = value.root, tty = 34817, command = 'codex\0resume\0') => {
+    const path = resolve(proc, String(pid)); await mkdir(path, { recursive: true })
+    await writeFile(resolve(path, 'comm'), 'codex\n')
+    await writeFile(resolve(path, 'stat'), `${pid} (codex) S 1 1 1 ${tty} 0 0\n`)
+    await writeFile(resolve(path, 'cmdline'), command)
+    await writeFile(resolve(path, 'environ'), `HOME=${value.root}\0PRIVATE_TOKEN=never-show\0${env}`)
+    await symlink(cwd, resolve(path, 'cwd'))
+  }
+  try {
+    await mkdir(library, { recursive: true }); await mkdir(proc)
+    assert.equal(await workspaceCliCheck(value.root, library, options), null)
+    await client(100, '')
+    const warning = await workspaceCliCheck(value.root, library, options)
+    assert.equal(warning?.status, 'warn'); assert.match(warning?.detail || '', /PID 100/)
+    assert.match(warning?.detail || '', /bash codex-portable resume/)
+    assert.doesNotMatch(JSON.stringify(warning), /PRIVATE_TOKEN|never-show/)
+    await writeFile(resolve(proc, '100/environ'), `CODEX_HOME=${library}\0`)
+    assert.equal((await workspaceCliCheck(value.root, library, options))?.status, 'ok')
+    // Other workspaces and background app servers do not imply a broken terminal.
+    const elsewhere = resolve(value.root, 'other'); await mkdir(elsewhere)
+    await client(200, '', elsewhere, 0)
+    await client(201, '', value.root, 34817, 'codex\0app-server\0')
+    await client(202, '', resolve(value.root, '..'))
+    assert.equal((await workspaceCliCheck(value.root, library, options))?.status, 'ok')
+    // A live CLI remains tied to its original home even after shell files change.
+    await writeFile(resolve(proc, '100/environ'), `CODEX_HOME=${resolve(value.root, '.codex')}\0`)
+    assert.equal((await workspaceCliCheck(value.root, library, options))?.status, 'warn')
+  } finally { await rm(value.root, { recursive: true, force: true }) }
 })

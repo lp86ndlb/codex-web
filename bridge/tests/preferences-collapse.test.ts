@@ -65,3 +65,29 @@ test('invalid collapse timing values are rejected and preserve the last valid sa
     assert.equal((await f.store.snapshot()).preferences.activityCollapseTiming, 'never')
   } finally { await f.close() }
 })
+
+test('old floating notes migrate to the visible sidebar without overwriting other preferences or the source file', async () => {
+  const preferences = { ...defaultPreferences, showInspector: false, theme: 'light', fontSize: 19 }
+  Reflect.deleteProperty(preferences, 'todoPlacement')
+  const initial = { preferences, sessions: {}, skillUsage: {} }, f = await fixture(initial)
+  try {
+    const value = (await f.store.snapshot()).preferences
+    assert.equal(value.todoPlacement, 'sidebar'); assert.equal(value.showInspector, true)
+    assert.equal(value.theme, 'light'); assert.equal(value.fontSize, 19)
+    assert.deepEqual(JSON.parse(await readFile(f.file, 'utf8')), initial)
+  } finally { await f.close() }
+})
+
+test('todo placement and an explicit hidden sidebar survive reloads and unrelated changes', async () => {
+  const f = await fixture()
+  try {
+    for (const placement of ['floating', 'sidebar'] as const) {
+      await f.store.update({ todoPlacement: placement, showInspector: false })
+      const loaded = new PreferencesStore(f.file)
+      await loaded.update(preferencesSchema.partial().parse({ fontSize: 18 }))
+      const prefs = (await loaded.snapshot()).preferences
+      assert.equal(prefs.todoPlacement, placement); assert.equal(prefs.showInspector, false)
+    }
+    assert.equal(preferencesSchema.partial().safeParse({ todoPlacement: 'elsewhere' }).success, false)
+  } finally { await f.close() }
+})

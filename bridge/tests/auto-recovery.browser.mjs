@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { chromium } from 'playwright'
@@ -24,7 +24,8 @@ const histories = {
   ] },
 }
 await writeFile(store, JSON.stringify(histories))
-const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: store } })
+const log = resolve(root, 'rpc.jsonl')
+const rpc = new CodexRpc({ command: process.execPath, args: [resolve('tests/fake-codex.mjs')], cwd, env: { ...process.env, FAKE_STORE: store, FAKE_LOG: log } })
 const bridge = new Bridge(rpc, new Workspace(cwd), resolve(root, 'home'), resolve(root, 'data'))
 await bridge.plugin.setEnabled(false)
 const app = createHttpServer({ bridge, dist: resolve(process.env.CWEB_TEST_DIST || 'dist') })
@@ -93,6 +94,30 @@ try {
   await recovery.getByText('需要手动继续', { exact: true }).waitFor()
   await recovery.getByText('本轮已执行工具，请检查结果后手动继续。', { exact: true }).waitFor()
   assert.equal(await runStatus.count(), 0)
+
+  // A frontend hot update must explain the original upstream error even when
+  // the still-running backend supplies only its former generic recovery text.
+  const originalRestriction = 'Stream disconnected before completion: Your request was flagged for possible cybersecurity risk.'
+  state('manual', { error: originalRestriction, recovery: { state: 'manual', attempt: 0, maxAttempts: 1, sourceTurnId: sourceTurn, message: '本轮已有工具或文件操作，需确认结果后手动重试。' } })
+  await recovery.getByText('模型内容安全拦截', { exact: true }).waitFor()
+  assert.match(await recovery.textContent(), /仅凭该错误无法确定触发内容/)
+  assert.match(await recovery.textContent(), /不适合自动重试/)
+  assert.ok(!(await recovery.textContent()).includes('需确认结果后手动重试'))
+  await recovery.locator('summary').filter({ hasText: '查看原始错误' }).click()
+  assert.equal(await recovery.locator('details p').textContent(), originalRestriction)
+  assert.equal(bridge.threads.get(a).error, originalRestriction)
+  assert.equal(await runStatus.count(), 0)
+  state('manual', { error: originalRestriction, recovery: null })
+  await recovery.getByText('模型内容安全拦截', { exact: true }).waitFor()
+  assert.equal(await recovery.locator('.recovery-count').count(), 0, 'No recovery metadata should be invented for native/imported failures')
+  assert.equal(await recovery.getAttribute('data-failure-kind'), 'content')
+  await page.screenshot({ path: resolve(output, 'content-restriction-desktop.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+  await page.screenshot({ path: resolve(output, 'content-restriction-mobile.png'), fullPage: true })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  state('manual', { recovery: { state: 'manual', attempt: 1, maxAttempts: 1, sourceTurnId: sourceTurn, message: '本轮已执行工具，请检查结果后手动继续。' } })
+
   bridge.changed({ ...bridge.threads.get(a), contextUsage: { inputTokens: 69_000, windowTokens: 100_000, updatedAt: Date.now() } })
   await contextTrigger.click(); await until(async () => /69%/.test(await contextHint.textContent() || ''))
   bridge.changed({ ...bridge.threads.get(a), contextUsage: { inputTokens: 70_000, windowTokens: 100_000, updatedAt: Date.now() } })
@@ -120,8 +145,10 @@ try {
   assert.equal(await retried.locator('.message-recovery-tag').textContent(), '自动重试')
   assert.equal(await original.locator('.message-recovery-tag').count(), 0)
   await page.screenshot({ path: resolve(output, 'auto-recovery-message-tag.png'), fullPage: true })
+  const calls = (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+  assert.equal(calls.filter(row => ['turn/start', 'turn/steer'].includes(row.method)).length, 0, 'Error inspection and settings never submit or rewrite messages')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ settingsPersisted: true, originalQualityExplained: true, webpageOnlyRecoveryScope: true, scheduledNotFakeRunning: true, recoveryStatesVisible: true, recoveryNotTaskSuccess: true, contextThresholdAndLimits: true, contextDoesNotAutoExecute: true, retryBubbleMarked: true, tagSurvivesNativeRehydration: true, originalMessagesUnchanged: true, mobile: true, pageErrors: errors }))
+  console.log(JSON.stringify({ settingsPersisted: true, originalQualityExplained: true, webpageOnlyRecoveryScope: true, scheduledNotFakeRunning: true, recoveryStatesVisible: true, contentRestrictionOverridesOldGenericHint: true, contentRestrictionWithoutRecovery: true, rawErrorPreserved: true, noMessageSubmission: true, recoveryNotTaskSuccess: true, contextThresholdAndLimits: true, contextDoesNotAutoExecute: true, retryBubbleMarked: true, tagSurvivesNativeRehydration: true, originalMessagesUnchanged: true, mobile: true, pageErrors: errors }))
 } catch (error) {
   await page.screenshot({ path: resolve(output, 'auto-recovery-failure.png'), fullPage: true }).catch(() => {})
   throw error

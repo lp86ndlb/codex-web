@@ -1,5 +1,6 @@
 import type { ActivityView, Approval, ThreadSummary } from './types.ts'
 import { pendingChoiceMessage } from './choices.ts'
+import { threadStatus } from './thread-activity.ts'
 
 export interface ThreadActivity { id: string; title: string; cwd: string; status: string; attention: boolean; updatedAt: number; turn: string; loaded?: boolean; fresh?: boolean; attentionKey?: string }
 export interface ThreadNotice extends ThreadActivity { kind: 'waiting' | 'completed'; key: string }
@@ -13,7 +14,7 @@ export function threadActivity(threads: ThreadSummary[], views: Record<string, A
     const summaryAttention = summary?.attention && (!view || summary.updatedAt >= view.updatedAt)
     const choice = view?.choicePending ? `choice:${view.choiceId || pendingChoiceMessage(view.items || [])?.id || ''}` : ''
     const attentionKey = pending.get(id)?.sort().join(';') || choice || (summaryAttention ? 'summary' : '')
-    return [id, { id, title: view?.title || summary?.title || '会话', cwd: view?.cwd || summary?.cwd || '', status: summary && (!view || summary.updatedAt > view.updatedAt) ? summary.status || view?.status || 'idle' : view?.status || summary?.status || 'idle', attention: Boolean(attentionKey), attentionKey, updatedAt: Math.max(view?.updatedAt || 0, summary?.updatedAt || 0), turn: view?.turnId || view?.runs?.at(-1)?.id || '', loaded: Boolean(view) }]
+    return [id, { id, title: view?.title || summary?.title || '会话', cwd: view?.cwd || summary?.cwd || '', status: threadStatus(summary, view), attention: Boolean(attentionKey), attentionKey, updatedAt: Math.max(view?.updatedAt || 0, summary?.updatedAt || 0), turn: view?.turnId || view?.runs?.at(-1)?.id || '', loaded: Boolean(view) }]
   }))
 }
 export function newThreadNotices(previous: Map<string, ThreadActivity>, current: Map<string, ThreadActivity>): ThreadNotice[] {

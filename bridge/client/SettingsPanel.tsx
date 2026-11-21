@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Archive, ArrowLeft, Check, ChevronRight, Cpu, Gauge, Keyboard, LoaderCircle, Monitor, Moon, Palette, Plug, Puzzle, RefreshCw, Search, Settings2, ShieldCheck, Sun } from 'lucide-react'
 import type { Bootstrap, ModelOption, Preferences, SessionOptions, SkillInfo, ThreadSummary, ThreadView, WorkspaceInfo } from '../shared/types.ts'
 import { api, message } from './api.ts'
-import { describeEffort } from '../shared/activity.ts'
+import { describeEffort, describeModel } from '../shared/activity.ts'
 import { BrandMark } from './BrandMark.tsx'
 import { Notice, TranscriptItem } from './components.tsx'
 import { shortcuts } from './commands.ts'
@@ -26,10 +26,12 @@ const tabs: { id: SettingsTab; title: string; icon: ReactNode }[] = [
 export function Switch({ label, detail, checked, onChange, disabled = false }: { label: string; detail?: string; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
   return <label className="setting-switch"><span><strong>{label}</strong>{detail && <small>{detail}</small>}</span><span className="switch-control"><input type="checkbox" aria-label={label} checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} /><span className="switch-track"><span /></span></span></label>
 }
-function OptionFields({ value, models, onChange, prefix }: { value: SessionOptions; models: ModelOption[]; onChange: (patch: Partial<SessionOptions>) => void; prefix: string }) {
-  const efforts = models.find(model => model.id === value.model)?.efforts || ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
-  return <div className="option-fields"><label>{prefix}模型<select aria-label={`${prefix}模型`} value={value.model} onChange={event => onChange({ model: event.target.value, effort: '' })}><option value="">CLI 默认模型</option>{value.model && !models.some(model => model.id === value.model) && <option value={value.model}>{value.model}</option>}{models.map(model => <option value={model.id} key={model.id}>{model.label}</option>)}</select></label>
-    <label>{prefix}推理强度<select aria-label={`${prefix}推理强度`} value={value.effort} onChange={event => onChange({ effort: event.target.value })}><option value="">模型默认</option>{efforts.map(effort => <option key={effort} value={effort}>{describeEffort(effort)}</option>)}</select></label>
+function OptionFields({ value, models, onChange, prefix, defaults }: { value: SessionOptions; models: ModelOption[]; onChange: (patch: Partial<SessionOptions>) => void; prefix: string; defaults?: SessionOptions }) {
+  const efforts = models.find(model => model.id === (value.model || defaults?.model))?.efforts || ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+  const defaultModel = defaults ? `跟随默认设置（${models.find(model => model.id === defaults.model)?.label || describeModel(defaults.model) || 'CLI 默认模型'}）` : 'CLI 默认模型'
+  const defaultEffort = defaults ? `跟随默认设置（${defaults.effort ? describeEffort(defaults.effort) : '模型默认'}）` : '模型默认'
+  return <div className="option-fields"><label>{prefix}模型<select aria-label={`${prefix}模型`} value={value.model} onChange={event => onChange({ model: event.target.value, effort: '' })}><option value="">{defaultModel}</option>{value.model && !models.some(model => model.id === value.model) && <option value={value.model}>{describeModel(value.model)}</option>}{models.map(model => <option value={model.id} key={model.id}>{model.label}</option>)}</select></label>
+    <label>{prefix}推理强度<select aria-label={`${prefix}推理强度`} value={value.effort} onChange={event => onChange({ effort: event.target.value })}><option value="">{defaultEffort}</option>{efforts.map(effort => <option key={effort} value={effort}>{describeEffort(effort)}</option>)}</select></label>
     <label>{prefix}权限<select aria-label={`${prefix}权限`} value={value.mode} onChange={event => onChange({ mode: event.target.value as SessionOptions['mode'], ...(event.target.value === 'danger-full-access' ? { approvalPolicy: 'never' as const } : {}) })}><option value="workspace-write">工作区可写</option><option value="read-only">只读</option><option value="danger-full-access">完全权限</option></select></label>
     <label>{prefix}审批<select aria-label={`${prefix}审批`} disabled={value.mode === 'danger-full-access'} value={value.mode === 'danger-full-access' ? 'never' : value.approvalPolicy} onChange={event => onChange({ approvalPolicy: event.target.value as SessionOptions['approvalPolicy'] })}><option value="on-request">按需审批</option><option value="untrusted">不可信操作先审批</option><option value="never">不请求审批</option></select></label>
   </div>
@@ -86,20 +88,22 @@ export function SettingsPanel(props: {
         <p className="settings-footnote">只处理从网页提交的请求；原生终端会话由 CLI 自身恢复。</p>
         <label className="setting-field">图片读取方式<select aria-label="图片读取方式" value={prefs.imageInputMode || 'on-demand'} onChange={event => change({ imageInputMode: event.target.value as Preferences['imageInputMode'] })}><option value="on-demand">按需读取原图（推荐）</option><option value="inline">随消息直接发送原图</option></select></label>
         <p className="settings-footnote">两种方式都保留原图质量。按需模式在 CLI 需要时通过看图工具读取，减少历史中长期携带的图片；只影响网页之后发送的图片。</p>
-        <Switch label="默认显示工作区面板" detail="下次打开页面时展示文件与变更面板" checked={prefs.showInspector} onChange={showInspector => change({ showInspector })} />
+        <Switch label="默认显示工作区面板" detail="桌面端打开页面时展开右侧栏；窄屏通过顶部按钮打开" checked={prefs.showInspector} onChange={showInspector => change({ showInspector })} />
         <Switch label="默认显示处理步骤" detail="显示每一步的说明；原始命令、代码与长输出仍按需展开" checked={prefs.showActivityDetails} onChange={showActivityDetails => change({ showActivityDetails })} />
         <label className="setting-field">工作步骤收起时机<select aria-label="工作步骤收起时机" value={prefs.activityCollapseTiming || 'next-input'} onChange={event => change({ activityCollapseTiming: event.target.value as Preferences['activityCollapseTiming'] })}><option value="completion">回答结束后</option><option value="next-input">下次有新消息时</option><option value="never">不收起</option></select></label>
         <p className="settings-footnote">只自动收起处理步骤，回答内容保持可见；手动展开后可继续回看。</p>
         <Switch label="启用待办便签" detail="dsh-todo-note · 每个会话独立保存，完成后由你确认" checked={props.plugin} disabled={props.pluginSaving} onChange={props.onPlugin} />
+        <label className="setting-field">待办显示位置<select aria-label="待办显示位置" value={prefs.todoPlacement || 'sidebar'} onChange={event => change({ todoPlacement: event.target.value as Preferences['todoPlacement'], showInspector: event.target.value === 'sidebar' })}><option value="sidebar">右侧栏（默认）</option><option value="floating">悬浮窗</option></select></label>
+        <p className="settings-footnote">右侧栏按待办、变更、文件排列。悬浮窗保留拖动、缩放和位置记忆；切换不会改变已保存的待办。</p>
         <div className="settings-callout">旧会话可以在空闲后连接便签工具；每次会话分别保存待办。</div>
       </>}
-      {tab === 'models' && <><h4>新会话默认设置</h4><p className="settings-description">默认值用于新建会话；已有会话保留自己的模型与权限。</p><p className="settings-footnote">完全权限允许访问本机文件和网络，并关闭逐次审批。</p><OptionFields prefix="默认" value={prefs} models={props.boot?.models || []} onChange={change} />
-        {props.current && <section className="settings-section"><h4>当前会话</h4><p className="settings-description">{props.current.title} · 更改从下一轮生效</p><OptionFields prefix="当前会话" value={props.current.options} models={props.boot?.models || []} onChange={props.onCurrent} /><button className="settings-text-button" onClick={() => props.onCurrent({ model: prefs.model, effort: prefs.effort, mode: prefs.mode, approvalPolicy: prefs.approvalPolicy })}>将默认设置应用到此会话</button></section>}
+      {tab === 'models' && <><h4>新会话默认设置</h4><p className="settings-description">默认模型与强度用于新会话和选择跟随默认的会话；单独指定的设置保留。</p><p className="settings-footnote">完全权限允许访问本机文件和网络，并关闭逐次审批。</p><OptionFields prefix="默认" value={prefs} models={props.boot?.models || []} onChange={change} />
+        {props.current && <section className="settings-section"><h4>当前会话</h4><p className="settings-description">{props.current.title} · 更改从下一轮生效</p><OptionFields prefix="当前会话" value={props.current.options} models={props.boot?.models || []} onChange={props.onCurrent} defaults={prefs} /><button className="settings-text-button" onClick={() => props.onCurrent({ model: '', effort: '', mode: prefs.mode, approvalPolicy: prefs.approvalPolicy })}>将默认设置应用到此会话</button></section>}
       </>}
       {tab === 'appearance' && <><div className="theme-choices">{[{ id: 'dark', title: '深色', icon: <Moon size={22} /> }, { id: 'light', title: '浅色', icon: <Sun size={22} /> }, { id: 'system', title: '跟随系统', icon: <Monitor size={22} /> }].map(theme => <button type="button" key={theme.id} aria-pressed={prefs.theme === theme.id} className={prefs.theme === theme.id ? 'selected' : ''} onClick={() => change({ theme: theme.id as Preferences['theme'] })}>{theme.icon}<span>{theme.title}</span></button>)}</div>
         <label className="setting-range">正文字号<strong>{prefs.fontSize}px</strong><input aria-label="正文字号" type="range" min="14" max="22" value={prefs.fontSize} onChange={event => change({ fontSize: Number(event.target.value) })} /></label>
         <label className="setting-range">界面字号<strong>{prefs.uiFontSize}px</strong><input aria-label="界面字号" type="range" min="12" max="18" value={prefs.uiFontSize} onChange={event => change({ uiFontSize: Number(event.target.value) })} /></label>
-        <p className="settings-footnote">聊天区使用适合阅读的固定宽度，随窗口自动适配。</p>
+        <p className="settings-footnote">正文字号用于对话、输入和题目；界面字号用于侧栏、待办、设置和菜单。布局随可用窗口高度调整。</p>
         <Switch label="界面动画" detail="柔和的展开、勾选和状态过渡；尊重系统减少动态效果设置" checked={prefs.animations} onChange={animations => change({ animations })} />
         <LoadingStylePicker value={props.loadingStyle} onChange={props.onLoadingStyle} autoFocus={props.loadingFocus} />
         <h4>文件与图片</h4>

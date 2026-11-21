@@ -25,7 +25,7 @@ export function Questionnaire({ approval, onError, onBack }: { approval: Approva
   function next() { if (!value(question.id).trim() || busy || step.closing) return; if (last) void submit('accept'); else step.exit(() => setIndex(index + 1)) }
   return <section className="approval-card questionnaire" aria-label="需要你的回答">
     <div className="approval-title"><MessageCircleQuestion size={18} /><span>{question.header || '需要你的选择'}</span><small className="question-position">{index + 1} / {approval.questions.length}</small></div>
-    <fieldset key={question.id} ref={field} disabled={busy || step.closing} data-exiting={step.closing || undefined} onKeyDown={event => {
+    <div className="question-fields"><fieldset key={question.id} ref={field} disabled={busy || step.closing} data-exiting={step.closing || undefined} onKeyDown={event => {
       if (event.nativeEvent.isComposing || busy) return
       const target = event.target as HTMLInputElement
       const editingText = target.tagName === 'INPUT' && target.type !== 'radio' && Boolean(target.value)
@@ -41,6 +41,6 @@ export function Questionnaire({ approval, onError, onBack }: { approval: Approva
       {(custom[question.id] || !question.options.length) && <input autoFocus aria-label={question.question} type={question.isSecret ? 'password' : 'text'} placeholder="输入你的回答" value={customAnswers[question.id] || ''} onChange={event => { setCustom(previous => ({ ...previous, [question.id]: true })); setCustomAnswers(previous => ({ ...previous, [question.id]: event.target.value })) }} />}
     </fieldset>
     {error && <p role="alert" className="choice-error">{error}</p>}
-    <div className="question-navigation"><button type="button" disabled={busy} onClick={previous}><ArrowLeft size={15} />{index > 0 ? '上一项' : '回到对话'}<kbd>Shift ←</kbd></button><button type="button" className="primary" disabled={busy || !value(question.id).trim()} onClick={next}>{busy ? '提交中…' : last ? '提交回答' : '下一项'}{!last && <ArrowRight size={15} />}</button></div>
+    </div><div className="question-navigation"><button type="button" disabled={busy} onClick={previous}><ArrowLeft size={15} />{index > 0 ? '上一项' : '回到对话'}<kbd>Shift ←</kbd></button><button type="button" className="primary" disabled={busy || !value(question.id).trim()} onClick={next}>{busy ? '提交中…' : last ? '提交回答' : '下一项'}{!last && <ArrowRight size={15} />}</button></div>
   </section>
 }

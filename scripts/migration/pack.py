@@ -39,6 +39,11 @@ def snapshot_rollout(source, target):
             output.write(raw)
 
 
+def codex_aliases(codex_home):
+    default = Path.home() / '.codex'
+    return [str(default)] if default.is_dir() and default.resolve() == codex_home.resolve() and default != codex_home else []
+
+
 def snapshot(codex_home, data, target, developer):
     codex = target / 'codex'
     codex.mkdir(parents=True)
@@ -58,7 +63,7 @@ def snapshot(codex_home, data, target, developer):
             snapshot_rollout(source, codex / source.relative_to(codex_home))
             count += 1
     for _, path in rows:
-        if not (codex / Path(path).relative_to(codex_home)).is_file():
+        if not (codex / Path(path).resolve().relative_to(codex_home.resolve())).is_file():
             raise RuntimeError('会话索引引用的历史缺失: ' + Path(path).name)
     for name in ('skills', 'plugins', 'memories', 'config.toml', 'AGENTS.md', 'models_cache.json'):
         copy(codex_home / name, codex / name)
@@ -105,6 +110,9 @@ def pack(root, codex_home, data, node, dist, output, developer):
         copy(node, runtime / 'bin/node')
         copy(node_root / 'LICENSE', runtime / 'LICENSE')
         copy(node_root / 'lib/node_modules/npm', runtime / 'lib/node_modules/npm')
+        if (node_root / 'git/usr/bin/git').is_file() and (node_root / 'bin/git').is_file():
+            copy(node_root / 'git', runtime / 'git')
+            copy(node_root / 'bin/git', runtime / 'bin/git')
         for name, target in [('npm', '../lib/node_modules/npm/bin/npm-cli.js'), ('npx', '../lib/node_modules/npm/bin/npx-cli.js')]:
             (runtime / 'bin' / name).symlink_to(target)
         private = stage / '.migration'
@@ -122,10 +130,21 @@ def pack(root, codex_home, data, node, dist, output, developer):
         for name in ('codex-portable', '继续开发会话.sh'):
             (stage / name).chmod(0o700)
         copy(root / 'docs/migration-package.md', stage / '先读我-迁移说明.md')
-        handoff = root / '.cache/migration-handoff.md'
-        if handoff.exists():
-            copy(handoff, stage / 'MIGRATION_HANDOFF.md')
+        # Generate current handoff metadata instead of carrying an obsolete
+        # first-migration note from a previous machine's cache.
+        commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root).decode().strip()
+        (stage / 'MIGRATION_HANDOFF.md').write_text(
+            '# cweb 开发会话交接\n\n'
+            '这是当前代码和原生历史的私人迁移快照，不要从头重建。\n\n'
+            '- 开发会话：`' + developer + '`；使用网页或 `bash 继续开发会话.sh` 接续。\n'
+            '- 源码提交：`' + commit + '`；快照时间见 `.migration/manifest.json`。\n'
+            '- 首次运行 `bash cweb`，恢复后新开 Bash 验证 `cweb doctor` 与 `codex resume`。\n'
+            '- `.migration/codex` 是活动原生会话库，不是可删除的临时目录。\n'
+            '- 请先读 `docs/migration-lessons.md`、`docs/migration-package.md` 和本会话待办。\n'
+            '- 本机是否通过验收以当前实测为准；原机结果不能替代新机验证。\n'
+            '- 修改前 Git 备份；保留运行任务，前端可独立发布；任务完成提交用户确认。\n')
         manifest = {'format': 1, 'architecture': 'x86_64', 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'sourceRoot': str(root), 'sourceHome': str(Path.home()), 'sourceCodexHome': str(codex_home), 'sourceNodeRoot': str(node_root), 'developerThread': developer, 'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root).decode().strip(), 'nodeVersion': subprocess.check_output([str(node), '--version']).decode().strip(), 'codexVersion': '0.169.0', 'counts': counts, 'excluded': ['auth.json', 'SSH keys', 'IPC/PID/locks', 'pending execution queues', 'browser profile/localStorage', 'other workspace project files', 'temporary system files and most build/test caches'], 'sha256': {}, 'symlinks': {}, 'executables': []}
+        manifest['sourceCodexAliases'] = codex_aliases(codex_home)
         for path in sorted(stage.rglob('*')):
             name = str(path.relative_to(stage))
             if path.is_symlink():

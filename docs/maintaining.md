@@ -10,7 +10,7 @@
 
 徽章仅说明项目当前的技术、部署定位与 [MIT 许可证](../LICENSE)。没有发布或持续集成配置时，不展示虚构的发布、覆盖率或构建通过状态。
 
-`assets/cweb-demo.png` 使用隔离模拟 CLI 和演示会话生成。更新截图时不要截取真实项目、个人工作区或账户；图注须说明演示数据。
+首页图片保存在 `assets/readme/`。工作台、团队关系图和审批与待办特写来自同一个隔离的演示工作区，由模拟 CLI 提供会话数据。更新时沿用虚构项目和会话，并在图注注明演示数据。
 
 ## GitHub Topics
 
@@ -60,6 +60,22 @@ git config --local user.email "YOUR_ID+YOUR_LOGIN@users.noreply.github.com"
 ```
 
 如希望隐藏邮箱，可改用 GitHub 邮箱设置中提供的 `noreply` 地址。更新配置只影响后续提交，不能清除已公开提交中的作者或提交者信息。重写公共历史需要单独评估，不属于正常同步步骤。
+
+## 有运行中任务时更新界面
+
+只修改界面、且已验证新界面兼容当前服务接口时，无需等待全部任务结束。先在独立目录构建和验证，再发布静态资源：
+
+```bash
+npm --prefix bridge run build -- --outDir ../.cache/ui-release
+cd bridge
+CWEB_TEST_DIST=../.cache/ui-release node tests/live-ui-upgrade.browser.mjs
+cd ..
+npm run publish:ui -- .cache/ui-release
+```
+
+发布脚本先复制资源，最后原子替换页面入口；保留旧资源供已打开的页面按需加载，刷新网页即可使用新版，不重启服务。不要在运行中的 `bridge/dist` 直接构建，以免构建清空旧资源。
+
+服务端改动仍需在任务空闲时正常重启。待办位置设置支持与上一版服务兼容：新版网页先在浏览器保存布局选择，服务升级后再同步到服务端。发布验收必须访问实际服务地址，核对入口资源和交互；仅有构建通过或“等待空闲”的记录，不算已经启用。
 
 ## 发布前
 

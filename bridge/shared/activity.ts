@@ -13,6 +13,11 @@ const effortLabels: Record<string, string> = { none: '关闭', minimal: '最小'
 /** Protocol identifiers stay intact; only their visible headings are localized. */
 export function describeItemType(type: string): string { return Object.hasOwn(itemTypeLabels, type) ? itemTypeLabels[type] : '其他操作' }
 export function isToolActivityType(type: string): boolean { return Object.hasOwn(itemTypeLabels, type) && !messageTypes.has(type) }
+export function describeModel(model: string): string {
+  return model.replace(/^gpt(?=[\s-]|$)/i, 'GPT')
+    .replace(/\b(?:sol|astra|terra|luna|mini|nano)\b/gi, name => name[0].toUpperCase() + name.slice(1).toLowerCase())
+}
+
 export function describeEffort(effort: string): string {
   return Object.hasOwn(effortLabels, effort) ? effortLabels[effort] : effort
 }

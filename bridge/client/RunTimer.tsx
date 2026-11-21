@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react'
 import { Check, CircleAlert, Clock3, RefreshCw } from 'lucide-react'
 import type { RunMetrics, ThreadView } from '../shared/types.ts'
+import { contentRestriction } from '../shared/model-errors.ts'
 import { activityTitle } from './components.tsx'
 
 export function isThreadRunning(thread?: ThreadView) {
@@ -77,9 +78,12 @@ export const RunStatus = memo(function RunStatus({ thread, approvals }: { thread
  * can be waiting for a retry without pretending that model output is active. */
 export const SessionFeedback = memo(function SessionFeedback({ thread }: { thread?: ThreadView }) {
   const recovery = thread?.recovery
-  if (!recovery) return null
+  const restriction = thread?.status === 'failed' ? contentRestriction(thread.error) : undefined
+  if (!recovery && !restriction) return null
   const titles = { scheduled: '准备自动重试', retrying: '正在自动重试', manual: '需要手动继续', recovered: '响应已恢复' }
+  const state = restriction ? 'manual' : recovery!.state
+  const message = restriction?.message || recovery?.message
   return <div className="session-feedback">
-    {recovery && <div className="session-feedback-row recovery-status" data-recovery={recovery.state} role="status" aria-label="自动恢复状态">{recovery.state === 'recovered' ? <Check size={14} /> : recovery.state === 'manual' ? <CircleAlert size={14} /> : <RefreshCw size={14} />}<span className="session-feedback-copy"><strong>{titles[recovery.state]}</strong>{recovery.maxAttempts > 0 && <small className="recovery-count">{recovery.attempt}/{recovery.maxAttempts}</small>}{recovery.message && <span className="session-feedback-message" title={recovery.message}>{recovery.message}</span>}</span></div>}
+    <div className="session-feedback-row recovery-status" data-recovery={state} data-failure-kind={restriction ? 'content' : undefined} role="status" aria-label="自动恢复状态">{state === 'recovered' ? <Check size={14} /> : state === 'manual' ? <CircleAlert size={14} /> : <RefreshCw size={14} />}<div className="session-feedback-copy"><strong>{restriction?.title || titles[state]}</strong>{!restriction && recovery && recovery.maxAttempts > 0 && <small className="recovery-count">{recovery.attempt}/{recovery.maxAttempts}</small>}{message && <span className="session-feedback-message" title={message}>{message}</span>}{restriction && thread?.error && <details className="session-feedback-message"><summary>查看原始错误</summary><p>{thread.error}</p></details>}</div></div>
   </div>
 })

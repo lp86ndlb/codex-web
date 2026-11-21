@@ -2,7 +2,8 @@ import { z } from 'zod'
 import { JsonStore } from './storage.ts'
 import { defaultPreferences, type Preferences, type SessionOptions } from '../shared/types.ts'
 
-export const sessionOptionsSchema = z.object({ model: z.string().max(200), effort: z.string().max(64),
+export const serviceTierSelectionSchema = z.enum(['', 'default', 'fast', 'priority'])
+export const sessionOptionsSchema = z.object({ model: z.string().max(200), effort: z.string().max(64), serviceTier: serviceTierSelectionSchema.optional(),
   mode: z.enum(['workspace-write', 'read-only', 'danger-full-access']), approvalPolicy: z.enum(['on-request', 'untrusted', 'never']), collaborationMode: z.enum(['default', 'plan']).optional() }).strict()
 export const preferencesSchema = sessionOptionsSchema.extend({ theme: z.enum(['dark', 'light', 'system']),
   fontSize: z.number().int().min(14).max(22), uiFontSize: z.number().int().min(12).max(18), animations: z.boolean(),
@@ -10,8 +11,14 @@ export const preferencesSchema = sessionOptionsSchema.extend({ theme: z.enum(['d
   activityCollapseTiming: z.enum(['completion', 'next-input', 'never']).default('next-input'),
   autoRecovery: z.boolean().default(true), imageInputMode: z.enum(['on-demand', 'inline']).default('on-demand'),
   filePreviewLayout: z.enum(['dialog', 'side']).default('dialog'), inlineImageSize: z.enum(['comfortable', 'compact']).default('comfortable'),
-  imagePreviewZoom: z.enum(['fit', 'actual']).default('fit') }).strict()
-const schema = z.object({ preferences: preferencesSchema, sessions: z.record(sessionOptionsSchema),
+  imagePreviewZoom: z.enum(['fit', 'actual']).default('fit'), todoPlacement: z.enum(['sidebar', 'floating']).default('sidebar') }).strict()
+// Introduce the new default once. Subsequent explicit visibility choices survive
+// reloads, and reading an older file does not rewrite it.
+const storedPreferences = z.preprocess(value => {
+  if (value && typeof value === 'object' && !('todoPlacement' in value)) return { ...value, todoPlacement: 'sidebar', showInspector: true }
+  return value
+}, preferencesSchema)
+const schema = z.object({ preferences: storedPreferences, sessions: z.record(sessionOptionsSchema),
   disabledSkills: z.array(z.string()).default([]),
   skillUsage: z.record(z.object({ uses: z.number(), lastUsed: z.number() })) })
 export class PreferencesStore {

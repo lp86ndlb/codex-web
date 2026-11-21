@@ -1,10 +1,13 @@
 import type { ThreadView } from '../shared/types.ts'
+import { contentRestriction } from '../shared/model-errors.ts'
 import { record, string } from './errors.ts'
 
 /** Conservative replay policy. Native retries and activity are not failures. */
 export function recoveryPolicy(thread: ThreadView, turnId: string, pending = false): { allowed: boolean; message: string } {
   const deny = (message: string) => ({ allowed: false, message })
   if (thread.turnId || thread.status !== 'failed' || thread.runs?.at(-1)?.id !== turnId) return deny('任务尚未明确失败，未自动重发。')
+  const restriction = contentRestriction(thread.error)
+  if (restriction) return deny(restriction.message)
   if (thread.externalOwner || pending || thread.choicePending) return deny('会话正在等待确认或由其他端管理，请手动继续。')
   const usage = thread.contextUsage
   if (usage && usage.windowTokens > 0 && usage.inputTokens / usage.windowTokens >= .7) return deny('上下文较大，请先检查会话并考虑压缩后继续。')

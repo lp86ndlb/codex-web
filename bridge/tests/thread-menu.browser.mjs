@@ -65,9 +65,18 @@ try {
   await row(b.id).focus(); await page.keyboard.press('Shift+F10'); await menu().waitFor()
   await page.keyboard.press('End'); assert.equal(await page.evaluate(() => document.activeElement.textContent), '归档会话')
   await page.keyboard.press('ArrowDown'); assert.equal(await page.evaluate(() => document.activeElement.textContent), '打开会话')
+  // Observe the transition in-page; two automation round-trips can outlast
+  // the 220 ms retention window on a busy desktop.
+  await menu().evaluate(node => {
+    window.threadMenuExit = null
+    const observer = new MutationObserver(() => {
+      if (node.dataset.exiting) { window.threadMenuExit = getComputedStyle(node).animationName; observer.disconnect() }
+    })
+    observer.observe(node, { attributes: true, attributeFilter: ['data-exiting'] })
+  })
   await page.keyboard.press('Escape')
   assert.equal(await row(b.id).evaluate(node => node === document.activeElement), true)
-  assert.equal(await page.locator('.thread-context-menu[data-exiting]').count(), 1)
+  assert.equal(await page.evaluate(() => window.threadMenuExit), 'thread-menu-exit')
   await right(c.id); assert.equal(await page.locator('.thread-context-menu').count(), 1)
   await page.keyboard.press('Escape'); await page.locator('.thread-context-menu').waitFor({ state: 'detached' })
   await row(b.id).focus(); await page.keyboard.press('ContextMenu'); await menu().waitFor()
@@ -84,7 +93,7 @@ try {
 
   stage = 'terminal command belongs to the context target'
   await right(b.id); await menu().getByRole('menuitem', { name: '复制终端继续命令', exact: true }).click()
-  await until(async () => await page.evaluate(() => navigator.clipboard.readText()) === `codex resume ${b.id}`)
+  await until(async () => await page.evaluate(() => navigator.clipboard.readText()) === `CODEX_HOME='${resolve(root, 'home')}' codex resume --cd '${cwd}' '${b.id}'`)
   assert.ok(requests.some(request => request.method === 'POST' && request.path === `/api/threads/${b.id}/release`))
   assert.equal(await selected(), a.id)
 
