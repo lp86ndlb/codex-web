@@ -7,16 +7,20 @@
 <p align="center"><strong>在浏览器里使用本机 Codex，给不同会话分工，在待办里跟进结果。</strong></p>
 
 <p align="center">
-  <a href="docs/ubuntu-deployment.md"><img src="https://img.shields.io/badge/Ubuntu-本机部署-E95420?style=flat-square&amp;logo=ubuntu&amp;logoColor=white" alt="Ubuntu 本机部署"></a>
-  <a href="package.json"><img src="https://img.shields.io/badge/Node.js-24.9%2B-3C873A?style=flat-square&amp;logo=node.js&amp;logoColor=white" alt="Node.js 24.9+"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-65748B?style=flat-square" alt="MIT 许可证"></a>
+  <a href="https://github.com/lp86ndlb/codex-web/releases/latest"><img src="https://img.shields.io/badge/Latest%20Release-096B66?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="查看最新 Release"></a>
 </p>
 
 <p align="center">
+  <a href="#快速开始">快速开始</a> ·
   <a href="#团队分工">团队分工</a> ·
   <a href="#待办与验收">待办与验收</a> ·
-  <a href="#快速开始">快速开始</a> ·
-  <a href="docs/README.md">使用文档</a>
+  <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
+  <a href="docs/ubuntu-deployment.md"><img src="https://img.shields.io/badge/Ubuntu-本机部署-E95420?style=flat-square&amp;logo=ubuntu&amp;logoColor=white" alt="Ubuntu 本机部署"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/Node.js-24.9%2B-3C873A?style=flat-square&amp;logo=node.js&amp;logoColor=white" alt="Node.js 24.9+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-65748B?style=flat-square" alt="MIT 许可证"></a>
 </p>
 
 ![cweb 工作台，左侧是项目会话，中间是发布协调对话，右侧是待办与验收](docs/assets/readme/workbench.webp)
