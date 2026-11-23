@@ -13,6 +13,7 @@ import { StateDot } from './dsh/StateDot.tsx'
 import { DisclosureRow } from './dsh/DisclosureRow.tsx'
 import { describeCommand, describeItemType, describeTool } from '../shared/activity.ts'
 import { MessageTime } from './MessageMeta.tsx'
+import { QuestionSizeButton } from './QuestionSizeButton.tsx'
 import { Questionnaire } from './Questionnaire.tsx'
 import { useExitAnimation, useExitList } from './Motion.tsx'
 import { useDisclosureContent } from './useDisclosureContent.ts'
@@ -105,7 +106,7 @@ export function QuestionPanel({ approval, onError, exiting = false }: { approval
   const [expanded, setExpanded] = useState(true)
   function collapse() { setExpanded(false); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()) }
   return <section ref={card} className="question-panel" data-exiting={exiting || undefined} aria-hidden={exiting || undefined} {...(exiting ? { inert: '' } : {})} role="region" aria-label="Codex 需要你的选择">
-    <header className="question-panel-heading"><ShieldCheck size={16} /><strong>等待你的回答</strong><small>{approval.elicitation ? '工具交互' : approval.questions.length + ' 个问题'}</small><IconButton label={expanded ? '收起问题' : '展开问题'} onClick={() => setExpanded(value => !value)}>{expanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</IconButton></header>
+    <header className="question-panel-heading"><ShieldCheck size={16} /><strong>等待你的回答</strong><small>{approval.elicitation ? '工具交互' : approval.questions.length + ' 个问题'}</small>{expanded && approval.questions.length > 0 && <QuestionSizeButton />}<IconButton label={expanded ? '收起问题' : '展开问题'} onClick={() => setExpanded(value => !value)}>{expanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</IconButton></header>
     <div className="question-panel-body" data-open={expanded || undefined} {...(!expanded ? { inert: '' } : {})}><div><div className="question-panel-scroll"><ApprovalCard approval={approval} onError={onError} onBack={collapse} /></div></div></div>
   </section>
 }

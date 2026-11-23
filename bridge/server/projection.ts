@@ -42,6 +42,7 @@ export function projectItem(value: unknown): Item {
   }
   return {
     id: string(raw.id), type, text: text.slice(-visibleLimit), status: string(raw.status) || (type === 'contextCompaction' ? positive(raw.completedAtMs) ? 'completed' : positive(raw.startedAtMs) ? 'inProgress' : '' : ''),
+    ...(type === 'userMessage' && string(raw.clientId) ? { clientId: string(raw.clientId) } : {}),
     ...(type === 'reasoning' ? { summaryParts } : {}),
     ...(type === 'agentMessage' && raw.phase ? { phase: string(raw.phase) } : {}),
     ...(type === 'agentMessage' && raw.delivery === 'async' ? { delivery: 'async' as const } : {}),

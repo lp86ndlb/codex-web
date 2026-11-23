@@ -17,9 +17,10 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, policy: 
   t.after(async () => { await team.close(); await rm(root, { recursive: true, force: true }) })
   await team.register({ threadId: 'lead', name: '负责人', role: 'lead', cwd: '/fixture' })
   await team.register({ threadId: 'manager', name: '项目主管', role: 'manager', cwd: '/fixture' })
+  await team.register({ threadId: 'worker', name: '执行成员', role: 'worker', cwd: '/fixture' })
   await team.setPolicy({ policy }); await team.enable(true)
   const body = '## 项目范围\n\n检查 ROS2 的 Packet 解码和连接恢复日志。\n\n- **证据**：已有异常堆栈。\n- 交付：原因分析与复现结果。'
-  const proposal = await team.propose('lead', { to: 'manager', title: '核对桥接记录', kind: 'task', body, requestKey: 'same-real-body' })
+  const proposal = await team.propose('manager', { to: 'worker', title: '核对桥接记录', kind: 'task', body, requestKey: 'same-real-body' })
   const latest = async () => (await team.snapshot()).messages.find(row => row.id === proposal.id)!
   const review = async (decision: 'approve' | 'needs-user') => {
     const row = await latest(), approval = row.reviews[0]

@@ -44,7 +44,7 @@ test('graph enforces one root, adjacent parents, exclusive groups and directed p
 })
 
 test('cross-group tasks require both supervisors, exact digest and assigned identity', async t => {
-  const f = await fixture(t), task = await f.propose()
+  const f = await fixture(t); await f.team.setPeerMode({ peerMode: 'supervised' }); const task = await f.propose()
   await f.team.flush(); assert.equal(f.sent.length, 0)
   await f.team.decide(task.id, { version: 1, decision: 'approve' }); await f.team.flush()
   assert.deepEqual(f.sent.map(s => s.row.to), ['manager', 'manager-b'])
@@ -58,8 +58,9 @@ test('cross-group tasks require both supervisors, exact digest and assigned iden
   await assert.rejects(f.verdict(task.id, 'manager-b'), { code: 'TEAM_REVIEW' })
 })
 
-test('automatic direct routing uses no review model; same-level authorization remains mandatory', async t => {
+test('legacy automatic routing still requires supervisors for peer communication', async t => {
   const f = await fixture(t); await f.team.setPolicy({ policy: 'automatic' })
+  await f.team.setPeerMode({ peerMode: 'supervised' })
   const direct = await f.propose('lead', 'manager', 'direct'); await f.team.flush()
   assert.equal((await f.latest(direct.id)).reviews.length, 0); assert.equal(f.sent.length, 1)
   f.busy.clear()
@@ -71,7 +72,7 @@ test('automatic direct routing uses no review model; same-level authorization re
 
 test('AI risk judgment falls back to user, and edited content must be reviewed again', async t => {
   const f = await fixture(t); await f.team.setPolicy({ policy: 'ai' })
-  const task = await f.propose('lead', 'manager', 'risk'); await f.team.flush()
+  const task = await f.propose('manager', 'worker', 'risk'); await f.team.flush()
   assert.equal(f.sent[0].row.to, 'lead')
   await f.verdict(task.id, 'lead', 'needs-user'); assert.equal((await f.latest(task.id)).state, 'pending')
   let row = await f.latest(task.id)
@@ -79,7 +80,7 @@ test('AI risk judgment falls back to user, and edited content must be reviewed a
   assert.equal((await f.latest(task.id)).state, 'reviewing'); assert.equal(f.sent.length, 2)
   await f.verdict(task.id, 'lead', 'needs-user'); row = await f.latest(task.id)
   await f.team.decide(task.id, { version: row.version, decision: 'approve' }); await f.team.flush()
-  assert.equal((await f.latest(task.id)).state, 'delivered'); assert.equal(f.sent.at(-1)!.row.to, 'manager')
+  assert.equal((await f.latest(task.id)).state, 'delivered'); assert.equal(f.sent.at(-1)!.row.to, 'worker')
 })
 
 test('permission edits invalidate pending authorization; layout edits cost no calls and preserve it', async t => {
@@ -109,7 +110,7 @@ test('member creation always needs user approval, deduplicates, and cannot broad
 test('unknown review delivery is never resent and its scoped verdict can recover', async t => {
   let sends = 0
   const f = await fixture(t, { send: async () => { sends++; throw new Error('lost response') } })
-  await f.team.setPolicy({ policy: 'ai' }); const task = await f.propose('lead', 'manager'); await f.team.flush(); await f.team.flush()
+  await f.team.setPolicy({ policy: 'ai' }); const task = await f.propose('manager', 'worker'); await f.team.flush(); await f.team.flush()
   assert.equal(sends, 1); assert.equal((await f.latest(task.id)).reviews[0].state, 'uncertain')
   await f.team.reconcile(task.id); assert.equal(sends, 1)
   await f.verdict(task.id, 'lead'); assert.equal((await f.latest(task.id)).state, 'approved')
@@ -133,4 +134,144 @@ test('agent credential stays bound to one source and exposes no approval authori
   await assert.rejects(f.team.agentTool(token, 'team_propose_message', { ...payload, from: 'lead' }))
   await assert.rejects(f.team.agentTool('0'.repeat(64), 'team_members', {}), { code: 'TEAM_TOKEN' })
   await assert.rejects(f.team.agentTool(token, 'team_approve', {}), { code: 'TOOL_UNKNOWN' })
+})
+
+test('peers collaborate directly across groups and escalate a linked disagreement once', async t => {
+  const f = await fixture(t)
+  assert.equal((await f.team.snapshot()).peerMode, 'direct')
+  await f.team.setPolicy({ policy: 'automatic' })
+  const task = await f.propose()
+  await f.team.flush()
+  assert.deepEqual(f.sent.map(s => s.row.to), ['worker-b'])
+  assert.deepEqual((await f.latest(task.id)).reviews, [])
+  assert.match(f.sent[0].text, /直属上级提交分歧/)
+  const ask = await f.team.propose('worker-b', { to: 'manager-b', kind: 'question', replyTo: task.id, title: '请决定接口版本', body: '甲方需要兼容，乙方希望简化。建议保留兼容层。', requestKey: 'decision' })
+  await f.team.flush()
+  const decision = await f.team.propose('manager-b', { to: 'worker-b', kind: 'result', replyTo: ask.id, title: '保留兼容层', body: '采用兼容方案。', requestKey: 'answer' })
+  f.busy.clear(); await f.team.flush()
+  assert.equal((await f.latest(decision.id)).state, 'delivered')
+  await f.team.propose('worker-b', { to: 'worker', kind: 'result', replyTo: task.id, title: '接口决定', body: '保留兼容层。', requestKey: 'sync' })
+  await f.team.flush()
+  assert.deepEqual(f.sent.map(s => s.row.to), ['worker-b', 'manager-b', 'worker-b', 'worker'])
+  await assert.rejects(f.propose('worker', 'lead', 'skip'), { code: 'TEAM_ROUTE' })
+  await assert.rejects(f.propose('manager', 'manager-b', 'unlinked'), { code: 'TEAM_ROUTE' })
+})
+
+test('direct peers use an independent risk reviewer and an unresolved risk still needs the user', async t => {
+  const f = await fixture(t)
+  await f.team.setPolicy({ policy: 'ai' })
+  const task = await f.propose()
+  await f.team.flush()
+  assert.deepEqual(f.sent.map(s => s.row.to), ['manager'])
+  const row = await f.latest(task.id)
+  assert.deepEqual(row.reviews.map(r => r.kind), ['risk'])
+  await assert.rejects(f.team.review('worker', { messageId: row.id, reviewId: row.reviews[0].id, digest: row.digest, decision: 'approve', reason: 'self' }), { code: 'TEAM_REVIEW' })
+  await f.verdict(task.id, 'manager', 'needs-user')
+  assert.equal((await f.latest(task.id)).state, 'pending')
+  const pending = await f.latest(task.id)
+  await f.team.decide(task.id, { version: pending.version, decision: 'approve' }); await f.team.flush()
+  assert.deepEqual(f.sent.map(s => s.row.to), ['manager', 'worker-b'])
+})
+
+test('root proposals surface to the user without a model turn; explicit forwarding checks the route and is idempotent', async t => {
+  const f = await fixture(t)
+  await f.team.setPolicy({ policy: 'ai' })
+  const original = await f.propose('lead', 'manager', 'forward-source')
+  await f.team.flush()
+  assert.equal(f.sent.length, 0)
+  assert.equal((await f.latest(original.id)).state, 'pending')
+  await f.team.decide(original.id, { version: original.version, decision: 'approve' })
+  await f.team.flush()
+  const parent = await f.latest(original.id)
+  assert.equal(parent.state, 'delivered')
+  const input = { to: 'worker', title: '接手通知', body: '请阅读交接文档。', version: parent.version }
+  await assert.rejects(f.team.forward(parent.id, { ...input, to: 'worker-b' }), { code: 'TEAM_ROUTE' })
+  await assert.rejects(f.team.forward(parent.id, { ...input, version: 1 }), { code: 'TEAM_SOURCE' })
+  const [a, b] = await Promise.all([f.team.forward(parent.id, input), f.team.forward(parent.id, input)])
+  assert.equal(a.id, b.id)
+  await f.team.flush()
+  const row = await f.latest(a.id)
+  assert.equal(row.from, 'manager'); assert.equal(row.replyTo, parent.id)
+  assert.equal(row.audit[0].actor, 'user')
+  assert.equal(row.reviews[0].reviewerId, 'lead')
+  await f.verdict(a.id, 'lead'); await f.team.flush()
+  assert.deepEqual(f.sent.map(x => x.row.to), ['manager', 'lead', 'worker'])
+})
+
+test('reopening a legacy self-review surfaces one pending user decision without replay', async t => {
+  const f = await fixture(t)
+  await f.team.setPolicy({ policy: 'ai' })
+  const task = await f.propose('manager', 'worker', 'legacy-review')
+  await f.team.flush()
+  await f.team.close()
+  const stored = JSON.parse(await readFile(f.file, 'utf8'))
+  const old = stored.messages[0]
+  old.reviews[0].reviewerId = old.from
+  await writeFile(f.file, JSON.stringify(stored))
+  const team = f.reopen()
+  const pending = (await team.snapshot()).messages[0]
+  await team.flush()
+  assert.equal(pending.id, task.id)
+  assert.equal(pending.state, 'pending')
+  assert.equal(pending.reviews.length, 0)
+  assert.ok(pending.version > old.version)
+  assert.equal(f.sent.length, 1)
+  await assert.rejects(team.review(old.from, { messageId: old.id, reviewId: old.reviews[0].id, digest: old.digest, decision: 'approve', reason: 'late' }), { code: 'TEAM_REVIEW' })
+})
+
+test('mode switches survive restart and legacy pending requests keep the original approvals', async t => {
+  const f = await fixture(t)
+  await f.team.setPeerMode({ peerMode: 'supervised' })
+  const old = await f.propose()
+  await f.team.setPeerMode({ peerMode: 'direct' })
+  const fresh = await f.propose('worker-b', 'worker', 'fresh')
+  await f.team.close()
+  const stored = JSON.parse(await readFile(f.file, 'utf8'))
+  delete stored.peerMode
+  delete stored.messages[0].peerMode
+  await writeFile(f.file, JSON.stringify(stored))
+  const team = f.reopen()
+  assert.equal((await team.snapshot()).peerMode, 'direct')
+  await team.setPeerMode({ peerMode: 'supervised' })
+  for (const row of [old, fresh]) await team.decide(row.id, { version: row.version, decision: 'approve' })
+  await team.flush()
+  const state = await team.snapshot()
+  assert.equal(state.messages[0].reviews.length, 2)
+  assert.equal(state.messages[1].state, 'delivered')
+  assert.equal(parseTeam(JSON.parse(await readFile(f.file, 'utf8'))).peerMode, 'supervised')
+})
+
+test('same-parent peers use the configured direction and manual gate in both modes', async t => {
+  const f = await fixture(t), state = await f.team.snapshot()
+  state.edges.push({ id: 'managers', source: 'manager', target: 'manager-b', direction: 'forward' })
+  await f.team.topology(topology(state))
+  for (const mode of ['direct', 'supervised'] as const) {
+    await f.team.setPeerMode({ peerMode: mode })
+    await assert.rejects(f.propose('manager-b', 'manager', mode), { code: 'TEAM_ROUTE' })
+    const task = await f.propose('manager', 'manager-b', mode)
+    assert.equal(task.state, 'pending')
+    await f.team.decide(task.id, { version: task.version, decision: 'approve' })
+    await f.team.flush()
+    const row = await f.latest(task.id)
+    assert.deepEqual(row.reviews.map(r => r.reviewerId), mode === 'direct' ? [] : ['lead'])
+    assert.equal(row.state, mode === 'direct' ? 'delivered' : 'reviewing')
+    f.busy.clear()
+  }
+})
+
+test('workload preferences survive reopen and workload only shows reachable direct children', async t => {
+  const f = await fixture(t)
+  await f.team.setDelegationPreference({ preference: 'local' })
+  await assert.rejects(f.team.setDelegationPreference({ preference: 'any' }))
+  const s = await f.team.snapshot()
+  s.edges.find(e => e.target === 'worker')!.direction = 'backward'
+  await f.team.topology(topology(s)); await f.team.close()
+  const team = f.reopen()
+  const read = async (id: string) => JSON.parse(await team.tool(id, 'team_members', { view: 'workload' }))
+  const blocked = await read('manager')
+  assert.equal(blocked.preference, 'local')
+  assert.deepEqual(blocked.members.map((m: { id: string }) => m.id), ['manager'])
+  const allowed = await read('manager-b')
+  assert.deepEqual(allowed.members.map((m: { activity: string }) => m.activity), ['unknown', 'unknown'])
+  assert.deepEqual(JSON.parse(await team.tool('manager-b', 'team_members', {})).workload, allowed)
 })

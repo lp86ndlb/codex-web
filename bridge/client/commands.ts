@@ -19,6 +19,7 @@ export const commands = [
   { id: '/archive', label: '归档当前会话', detail: '之后可在设置里查看与恢复' },
   { id: '/archives', label: '管理归档', detail: '搜索、查看和恢复归档会话' },
   { id: '/status', label: '账户状态与额度', detail: '查看账户使用额度和当前会话状态' },
+  { id: '/team', label: '团队协作设置', detail: '当前工作区的团队开关、通信审批和分工偏好' },
   { id: '/settings', label: '打开设置', detail: '外观、模型、权限和快捷键', key: 'Ctrl ,' },
   { id: '/help', label: '快捷键与帮助', detail: '查看网页支持的交互操作', key: 'Ctrl /' },
 ]

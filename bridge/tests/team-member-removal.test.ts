@@ -63,6 +63,7 @@ test('removing a leaf preserves delivery history, cancels its backlog and keeps 
 test('a chosen same-level replacement inherits child groups and restricted directions; affected reviews require new approval', async t => {
   const f = await fixture(t), state = await f.team.snapshot()
   state.edges.find(row => row.source === 'manager' && row.target === 'worker')!.direction = 'backward'
+  await f.team.setPeerMode({ peerMode: 'supervised' })
   state.edges.push({ id: 'peer-link', source: 'worker', target: 'worker-b', direction: 'both' })
   await f.team.topology(topology(state))
   const peer = await f.propose('worker', 'worker-b'); await f.approve(peer.id)

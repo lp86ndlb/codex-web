@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/releases/v0.5.0.md">What’s new in 0.5 Signal</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#work-across-sessions">Team mode</a> ·
   <a href="#tasks-and-review">Tasks and review</a> ·

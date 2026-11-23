@@ -39,6 +39,15 @@ page.on('pageerror', error => errors.push(error.message))
 page.on('response', response => { if (response.status() >= 400) failedRequests.push(`${response.status()} ${response.url()}`) })
 page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text().slice(0, 400)) })
 
+async function manageSelected(name) {
+  await page.locator('.thread-link.selected').click({ button: 'right' })
+  await page.getByRole('menu', { name: '会话菜单' }).getByRole('menuitem', { name, exact: true }).click()
+}
+async function openPanel() {
+  await page.getByRole('button', { name: '快捷命令', exact: true }).click()
+  await page.getByRole('option', { name: /GenUI 交互面板/ }).click()
+}
+
 try {
   await page.goto(base)
   await page.getByText('本地引擎已连接', { exact: true }).waitFor()
@@ -173,7 +182,7 @@ try {
   await noteCard.click()
   await page.locator('.dtn-card[data-view="note"]').waitFor()
   await noteCard.getByRole('button', { name: '最小化成球', exact: true }).click()
-  await page.getByRole('button', { name: '重命名会话' }).click()
+  await manageSelected('重命名')
   await page.getByLabel('会话名称', { exact: true }).fill('浏览器验证：多轮、审批与恢复')
   await page.getByRole('button', { name: '保存名称' }).click()
   await page.locator('.settings-dialog').waitFor({ state: 'hidden' })
@@ -193,7 +202,7 @@ try {
   await page.getByText('任务已停止 · 可以继续发送消息').waitFor()
   await page.reload()
   await page.getByText('任务已停止 · 可以继续发送消息').waitFor()
-  await page.getByRole('button', { name: '归档会话' }).click()
+  await manageSelected('归档会话')
   await page.getByRole('heading', { name: /让想法/ }).waitFor()
   await page.getByRole('button', { name: '显示工作区面板' }).click()
   await page.getByRole('button', { name: '文件', exact: true }).click()
@@ -209,7 +218,7 @@ try {
   await page.getByRole('checkbox', { name: '启用待办便签' }).uncheck()
   await page.getByRole('checkbox', { name: '启用待办便签' }).check()
   await page.keyboard.press('Escape')
-  assert.equal(await page.getByRole('dialog').isVisible(), false)
+  await page.getByRole('dialog').waitFor({ state: 'hidden' })
 
   // Settings persist separately from native Codex configuration.
   await page.getByRole('button', { name: /连接与设置/ }).click()
@@ -342,7 +351,7 @@ try {
   await page.getByRole('checkbox', { name: '默认显示处理步骤' }).check()
   await page.keyboard.press('Escape')
   assert.equal(await page.locator('.activity-group .tool-card').first().evaluate(node => node.open), false)
-  await page.getByRole('button', { name: 'GenUI 交互面板', exact: true }).click()
+  await openPanel()
   await page.getByRole('button', { name: '预览交互组件', exact: true }).click()
   const previewUI = page.getByRole('complementary', { name: 'GenUI 交互面板' })
   await previewUI.getByLabel('项目名称', { exact: true }).fill('本地演示')
@@ -400,7 +409,7 @@ try {
   await page.screenshot({ path: resolve(output, 'genui-interactive.png'), fullPage: true })
   await input.fill('GenUI 面板')
   await input.press('Enter')
-  if (!await page.getByRole('complementary', { name: 'GenUI 交互面板' }).isVisible()) await page.getByRole('button', { name: 'GenUI 交互面板' }).click()
+  if (!await page.getByRole('complementary', { name: 'GenUI 交互面板' }).isVisible()) await openPanel()
   await page.getByRole('complementary', { name: 'GenUI 交互面板' }).getByText('项目交互概览', { exact: true }).first().waitFor()
   await page.screenshot({ path: resolve(output, 'genui-panel.png'), fullPage: true })
   await page.getByRole('button', { name: '关闭交互面板' }).click()
@@ -415,10 +424,10 @@ try {
   await page.locator('.message-attachment').filter({ hasText: 'dragged.txt' }).waitFor()
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark')
   assert.equal(await input.evaluate(node => getComputedStyle(node).fontSize), '18px')
-  await page.getByRole('button', { name: '归档会话', exact: true }).click()
+  await manageSelected('归档会话')
   await page.getByRole('heading', { name: /让想法/ }).waitFor()
-  assert.equal(await page.getByRole('combobox', { name: '模型', exact: true }).textContent(), '测试模型')
-  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).textContent(), 'Medium')
+  assert.equal(await page.getByRole('combobox', { name: '模型', exact: true }).locator(':scope > span').textContent(), '测试模型')
+  assert.equal(await page.getByRole('combobox', { name: '推理强度', exact: true }).locator(':scope > span').textContent(), 'Medium')
 
   await page.getByRole('button', { name: /连接与设置/ }).click()
   await page.getByRole('button', { name: '归档会话', exact: true }).last().click()

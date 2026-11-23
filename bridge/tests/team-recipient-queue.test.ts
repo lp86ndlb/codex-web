@@ -165,6 +165,7 @@ test('ordinary tasks and supervisor reviews share a recipient FIFO and never ste
   const f = await fixture(t)
   const otherManager = await f.member('另一主管', 2, f.lead), otherWorker = await f.member('跨组接收会话', 3, otherManager)
   const state = await f.team.snapshot()
+  await f.team.setPeerMode({ peerMode: 'supervised' })
   state.edges.push({ id: 'peer-queue', source: f.workerA, target: otherWorker, direction: 'both' })
   await f.team.topology({ graphVersion: state.graphVersion, members: state.members, groups: state.groups, edges: state.edges, levels: state.levels })
   await f.idleStart()
@@ -290,4 +291,76 @@ test('long messages are split at the batch budget without truncating any origina
   const second = (await f.starts()).at(-1)!.params.input[0].text
   assert.ok(rows.slice(3).every(row => second.includes(row.body)))
   assert.equal((await f.starts()).length, 3)
+})
+
+test('independent workers deliver two results in one manager turn and follow-ups retain their approval gate', async t => {
+  const f = await fixture(t)
+  await f.idleStart()
+  const workers = [f.workerA, f.workerB]
+  const tasks = await Promise.all(workers.map(worker => f.propose(f.manager, worker)))
+  for (const task of tasks) await f.delivered(task.id)
+  for (const worker of workers) assert.equal((await f.starts(worker)).length, 1)
+
+  const results = await Promise.all(workers.map((worker, i) => f.team.propose(worker, {
+    to: f.manager, kind: 'result', requestKey: 'work-complete', replyTo: tasks[i].id, title: '检查结果', body: '已完成各自的检查',
+  })))
+  for (const result of results) await f.team.decide(result.id, { version: result.version, decision: 'approve' })
+  await f.finish()
+  for (const result of results) await f.delivered(result.id)
+  const starts = await f.starts()
+  assert.equal(starts.length, 2, 'One original manager turn plus one turn for both results')
+  for (const result of results) assert.equal((await f.latest(result.id)).batchId, starts[1].params.clientUserMessageId)
+
+  const reply = { to: f.workerA, replyTo: results[0].id, title: '复核', body: '请核对遗漏的边界条件', requestKey: 'follow-up' }
+  await assert.rejects(f.team.propose(f.manager, { ...reply, kind: 'result' }), { code: 'TEAM_RESULT_CLOSED' })
+  assert.equal((await f.team.snapshot()).messages.length, 4, 'No echo enters approval or delivery')
+  const correction = await f.team.propose(f.manager, { ...reply, kind: 'task' })
+  assert.equal(correction.state, 'pending')
+  await f.finish(f.workerA)
+  assert.equal((await f.starts(f.workerA)).length, 1)
+  await f.team.decide(correction.id, { version: correction.version, decision: 'approve' })
+  await f.delivered(correction.id)
+  assert.equal((await f.starts(f.workerA)).length, 2)
+})
+
+test('managers inspect load without extra turns, can work locally or dispatch while keeping their turn', async t => {
+  const f = await fixture(t)
+  const workload = async () => JSON.parse(await f.team.tool(f.manager, 'team_members', { view: 'workload' }))
+  await f.idleStart()
+  const first = await workload()
+  assert.equal(first.preference, 'balanced')
+  assert.equal(first.members.find((m: { id: string }) => m.id === f.manager).queuedUserMessages, 0)
+  assert.equal(first.members.length, 3)
+  assert.equal((await f.team.snapshot()).messages.length, 0)
+  for (const worker of [f.workerA, f.workerB]) assert.equal((await f.starts(worker)).length, 0)
+
+  await f.bridge.enqueue(f.manager, { text: 'private queued message', mode: 'read-only' })
+  await f.bridge.message(f.workerA, { text: '等待已有任务完成', mode: 'read-only' })
+  const before = await f.logs(), busy = await workload()
+  const byId = Object.fromEntries(busy.members.map((m: { id: string }) => [m.id, m]))
+  assert.equal(byId[f.manager].queuedUserMessages, 1)
+  assert.equal(byId[f.workerA].activity, 'running')
+  assert.equal(byId[f.workerB].activity, 'idle')
+  assert.equal(JSON.stringify(busy).includes('private queued message'), false)
+  assert.deepEqual((await f.logs()).filter(r => r.method === 'turn/start'), before.filter(r => r.method === 'turn/start'))
+
+  const task = await f.propose(f.manager, f.workerB, false)
+  assert.equal((await workload()).members.find((m: { id: string }) => m.id === f.workerB).awaitingApproval, 1)
+  await f.team.decide(task.id, { version: task.version, decision: 'approve' })
+  await f.delivered(task.id)
+  assert.ok(f.bridge.threads.get(f.manager)?.turnId)
+  assert.ok(f.bridge.threads.get(f.workerB)?.turnId)
+  assert.equal((await f.starts(f.manager)).length, 1, 'The manager keeps the main work in its original turn')
+})
+
+test('a fully delegated task can continue after the sender has finished', async t => {
+  const f = await fixture(t)
+  await f.idleStart()
+  const job = await f.propose(f.manager, f.workerB)
+  await f.delivered(job.id)
+  await f.finish(f.manager)
+  assert.ok(!f.bridge.threads.get(f.manager)?.turnId)
+  assert.ok(f.bridge.threads.get(f.workerB)?.turnId)
+  assert.equal((await f.starts(f.workerA)).length, 0)
+  assert.equal((await f.starts(f.manager)).length, 1)
 })

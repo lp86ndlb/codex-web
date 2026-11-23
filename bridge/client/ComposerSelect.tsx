@@ -1,17 +1,20 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Check } from 'lucide-react'
+import { Check, ChevronDown } from 'lucide-react'
 import { Presence } from './Motion.tsx'
 
 /** A select-only combobox: browser-native pickers cannot animate their exit. */
-export function ComposerSelect({ label, value, options, onChange, icon, className, title }: { label: string; value: string; options: { value: string; label: string; badge?: string }[]; onChange: (value: string) => void; icon?: ReactNode; className?: string; title?: string }) {
+export function ComposerSelect({ label, value, options, onChange, icon, className, title, placement = 'above' }: { label: string; value: string; options: { value: string; label: string; badge?: string; icon?: ReactNode }[]; onChange: (value: string) => void; icon?: ReactNode; className?: string; title?: string; placement?: 'above' | 'below' }) {
   const id = useId(); const trigger = useRef<HTMLButtonElement>(null); const popup = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false); const [active, setActive] = useState(0); const [position, setPosition] = useState<CSSProperties>({})
   const typeahead = useRef({ text: '', at: 0 })
   function measure() {
     const r = trigger.current?.getBoundingClientRect(); if (!r) return
     const width = Math.min(300, Math.max(220, r.width), innerWidth - 24)
-    setPosition({ left: Math.min(Math.max(12, r.left), innerWidth - width - 12), bottom: innerHeight - r.top + 8, width, maxHeight: Math.min(360, Math.max(96, r.top - 24)) })
+    const below = placement === 'below'
+    const vertical = below ? { top: r.bottom + 8 } : { bottom: innerHeight - r.top + 8 }
+    const available = below ? innerHeight - r.bottom : r.top
+    setPosition({ left: Math.min(Math.max(12, r.left), innerWidth - width - 12), ...vertical, width, maxHeight: Math.min(360, Math.max(96, available - 24)) })
   }
   function reveal() {
     measure(); setActive(Math.max(0, options.findIndex(option => option.value === value)))
@@ -56,6 +59,6 @@ export function ComposerSelect({ label, value, options, onChange, icon, classNam
       const now = performance.now(); typeahead.current = { text: now - typeahead.current.at < 700 ? typeahead.current.text + event.key : event.key, at: now }
       const index = options.findIndex(option => option.label.toLocaleLowerCase().includes(typeahead.current.text.toLocaleLowerCase())); if (index >= 0) setActive(index)
     }
-  }}>{icon}<span>{selected?.label || value || label}</span>{selected?.badge && <small className="composer-default-badge">{selected.badge}</small>}</button>
-  {createPortal(<Presence elementRef={popup} show={open} {...{ popover: 'manual' as const }} id={id} role="listbox" aria-label={`${label}选项`} className="composer-select-popover" style={position} onPointerDown={event => { if ((event.target as Element).closest('[role="option"]')) event.preventDefault() }}>{options.map((option, index) => <button type="button" role="option" aria-selected={option.value === value} id={`${id}-${index}`} tabIndex={-1} data-active={active === index || undefined} key={option.value} onPointerMove={() => setActive(index)} onClick={() => choose(index)}>{option.value === value ? <Check size={15} /> : <span className="select-check-space" />}<span>{option.label}{option.badge && <small className="composer-default-badge">{option.badge}</small>}</span></button>)}</Presence>, trigger.current?.closest('dialog') || document.body)}</>
+  }}>{icon || selected?.icon}<span>{selected?.label || value || label}</span>{selected?.badge && <small className="composer-default-badge">{selected.badge}</small>}{placement === 'below' && <ChevronDown size={12} aria-hidden="true" />}</button>
+  {createPortal(<Presence elementRef={popup} show={open} {...{ popover: 'manual' as const }} id={id} role="listbox" aria-label={`${label}选项`} className={`composer-select-popover${placement === 'below' ? ' source-menu' : ''}`} style={position} onPointerDown={event => { if ((event.target as Element).closest('[role="option"]')) event.preventDefault() }}>{options.map((option, index) => <button type="button" role="option" aria-selected={option.value === value} id={`${id}-${index}`} tabIndex={-1} data-active={active === index || undefined} key={option.value} onPointerMove={() => setActive(index)} onClick={() => choose(index)}>{option.value === value ? <Check size={15} /> : <span className="select-check-space" />}<span>{option.icon}{option.label}{option.badge && <small className="composer-default-badge">{option.badge}</small>}</span></button>)}</Presence>, trigger.current?.closest('dialog') || document.body)}</>
 }

@@ -17,8 +17,19 @@ const turns=Array.from({length:count},(_,i)=>({id:'turn-'+(i+1),status:'complete
   {id:'comment-'+(i+1),type:'agentMessage',phase:'commentary',text:'简短过程说明 '+(i+1)},
   {id:'answer-'+(i+1),type:'agentMessage',phase:'final_answer',text:'历史回答 '+(i+1)},
 ]}))
-await writeFile(store,JSON.stringify({[id]:{id,name:'按需历史加载验证',cwd,historyMode:'paginated',updatedAt:1700002000,turns}}))
-const rpc=new CodexRpc({command:process.execPath,args:[resolve('tests/fake-codex.mjs')],cwd,env:{...process.env,FAKE_STORE:store,FAKE_LOG:log}}),bridge=new Bridge(rpc,new Workspace(cwd),resolve(root,'home'),resolve(root,'data'))
+// More than two native pages collapse into one row, as in a team member's inbox.
+const memberId=randomUUID()
+const privateTurns=turns.slice(0,16)
+const teamTurns=Array.from({length:18},(_,i)=>({
+  id:'team-turn-'+i, status:'completed', startedAt:1700000300+i*10, completedAt:1700000305+i*10,
+  items:[{id:'delivery-'+i,type:'userMessage',content:[{type:'text',text:'团队任务 '+i}]},
+    {id:'team-result-'+i,type:'agentMessage',phase:'final_answer',text:'团队回复 '+i}],
+}))
+await writeFile(store,JSON.stringify({
+  [id]:{id,name:'按需历史加载验证',cwd,historyMode:'paginated',updatedAt:1700002000,turns},
+  [memberId]:{id:memberId,name:'连续折叠团队回溯',cwd,historyMode:'paginated',updatedAt:1700001000,turns:[...privateTurns,...teamTurns]},
+}))
+const rpc=new CodexRpc({command:process.execPath,args:[resolve('tests/fake-codex.mjs')],cwd,env:{...process.env,FAKE_STORE:store,FAKE_LOG:log}}),bridge=new Bridge(rpc,new Workspace(cwd),resolve(root,'home'),resolve(root,'data'),false,{workspaceTeams:true})
 await bridge.plugin.setEnabled(false)
 const app=createHttpServer({bridge,dist:resolve(process.env.CWEB_TEST_DIST||'dist')});await new Promise(r=>app.server.listen(0,'127.0.0.1',r))
 const browser=await chromium.launch({executablePath:'/usr/bin/microsoft-edge',headless:true,ignoreDefaultArgs:['--headless=old'],args:['--headless=new','--no-sandbox','--disable-dev-shm-usage']}),page=await browser.newPage({viewport:{width:1440,height:960},reducedMotion:'reduce'}),errors=[]
@@ -63,6 +74,31 @@ try{
   await older.click();await until(async()=>await page.getByText('历史加载暂时失败，请重试',{exact:true}).count()===0)
   await until(async()=>await older.isDisabled()===false)
   assert.ok(await transcript.locator('*').count()<6000)
+  // Check real native pagination with a fixture delivery ledger. Ordinary topics above still open with one read.
+  await page.unroute('**/api/threads/*/history?**')
+  await page.route('**/api/team?*', async route => {
+    const response=await route.fetch(), state=await response.json()
+    state.messages=teamTurns.map((t,i)=>({id:'row-'+i,to:memberId,deliveryId:t.items[0].id,state:'delivered',title:'团队任务 '+i,reviews:[]}))
+    await route.fulfill({response,json:state})
+  })
+  let foldedRequests=0
+  const foldedHistory='**/api/threads/'+memberId+'/history?**'
+  await page.route(foldedHistory,async route=>{
+    foldedRequests++
+    if(foldedRequests===2) return route.fulfill({status:503,json:{error:{code:'FIXTURE',message:'折叠回溯暂不可用'}}})
+    await route.continue()
+  })
+  await page.reload()
+  await page.locator(`[data-thread-id="${memberId}"]`).click()
+  await transcript.getByText('折叠回溯暂不可用',{exact:true}).waitFor()
+  await page.waitForTimeout(500)
+  assert.equal(foldedRequests,2,'Failed page cannot spin in an automatic retry loop')
+  await transcript.getByText('当前载入范围内没有个人对话',{exact:true}).waitFor()
+  await older.click()
+  await transcript.getByText('历史问题 16',{exact:true}).waitFor()
+  assert.equal(await transcript.getByText('团队回复 0',{exact:true}).count(),0)
+  await page.waitForTimeout(450)
+  assert.equal(foldedRequests,4,'Three distinct pages, one retry; stop once visible history fills the viewport')
   assert.deepEqual(errors,[])
   const result={initialTurns:initial.runs.length,initialBytes:Buffer.byteLength(JSON.stringify(initial)),initialNativeReads:initialReads,readyMs,oldestNotMounted:true,remoteSingleFlight:true,anchorError:Math.abs(before-after),liveReplyOnce:true,retryWorks:true,boundedDom:true,pageErrors:errors}
   await writeFile(resolve(output,'history-loading-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result))

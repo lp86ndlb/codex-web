@@ -69,7 +69,8 @@ test('native source binding and authenticated approvals deliver once, only after
     for (const row of (await f.logs()).filter(row => row.method === 'thread/start')) {
       assert.equal(row.params.sandbox, 'read-only')
       assert.equal(row.params.approvalPolicy, 'on-request')
-      assert.equal(row.params.dynamicTools.filter((tool: { name: string }) => tool.name.startsWith('team_')).length, 5)
+      assert.deepEqual(row.params.dynamicTools.map((tool: { name: string }) => tool.name).filter((name: string) => name.startsWith('team_')).sort(),
+        ['team_inbox', 'team_members', 'team_propose_message', 'team_report_completion', 'team_request_member', 'team_review_message'])
       assert.ok(!row.params.dynamicTools.some((tool: { name: string }) => tool.name === 'team_approve'))
     }
     const proposal = { to: manager.threadId, kind: 'task', title: '审批正文', body: '仅用于试验，7+5', requestKey: 'http-1' }

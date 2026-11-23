@@ -1,6 +1,8 @@
 import type { TeamMessage, TeamReview } from './team.ts'
 
-export const automaticTeamBatchSize = 3
+export function shouldAutoBatchTeamMessages(rows: readonly TeamMessage[]) {
+  return rows.length >= 3 || (rows.length === 2 && rows.every(row => row.kind === 'result'))
+}
 const maxBatchItems = 8
 const maxBatchContent = 30_000
 

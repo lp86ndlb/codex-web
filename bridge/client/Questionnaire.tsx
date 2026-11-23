@@ -13,7 +13,14 @@ export function Questionnaire({ approval, onError, onBack }: { approval: Approva
   const field = useRef<HTMLFieldSetElement>(null)
   const question = approval.questions[index]; const last = index === approval.questions.length - 1
   const value = (id: string) => custom[id] ? customAnswers[id] || '' : answers[id] || ''
-  useEffect(() => { const frame = requestAnimationFrame(() => (field.current?.querySelector<HTMLInputElement>('input:checked') || field.current?.querySelector<HTMLInputElement>('input'))?.focus()); return () => cancelAnimationFrame(frame) }, [index])
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const target = field.current?.querySelector<HTMLInputElement>('input:checked') || field.current?.querySelector<HTMLInputElement>('input')
+      target?.focus({ preventScroll: true })
+      field.current?.closest('.question-fields')?.scrollTo(0, 0)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [index])
   function previous() { if (step.closing) return; if (index > 0) step.exit(() => setIndex(index - 1)); else onBack?.() }
   async function submit(decision: 'accept' | 'decline') {
     if (busy || (decision === 'accept' && approval.questions.some(q => !value(q.id).trim()))) return

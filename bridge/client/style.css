@@ -67,9 +67,20 @@ kbd { font-size: max(var(--ui-min-font, 10px), 0.8571rem); color: var(--muted); 
 .sidebar-actions > button:first-child { font-size: max(var(--ui-min-font, 10px), 0.9286rem); color: var(--ink-secondary); padding: 8px; }
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 .topbar { display: flex; align-items: center; height: 60px; padding: 0 25px; gap: 10px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+/* The workspace switch is visible before the team graph loads. */
+.team-mode-switch{display:inline-flex;flex:none;align-items:center;border:1px solid var(--line);border-radius:8px;padding:2px;margin:0 5px 0 0;height:32px;box-sizing:border-box}
+.team-mode-switch button{display:flex;align-items:center;justify-content:center;height:26px;min-width:42px;padding:0 9px;font-size:.82rem;line-height:1;color:var(--muted);white-space:nowrap}
+.team-mode-switch button[aria-pressed=true]{background:var(--hover);color:var(--ink)}
+@media (max-width: 760px) {
+  .team-mode-switch{margin-right:0}
+  .team-mode-switch button{padding:0 7px;min-width:38px}
+  .topbar:has(>.team-mode-switch) .topbar-actions>.icon-button:is([aria-label="复制终端继续命令"],[aria-label="分支与原生审查"]){display:none}
+}
 .breadcrumb { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: max(var(--ui-min-font, 10px), 0.9286rem); min-width: 0; flex: 1; }
-.breadcrumb > svg { flex-shrink: 0; }
-.breadcrumb > span:first-of-type { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.breadcrumb-workspace { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 40%; }
+.breadcrumb-workspace svg { flex: none; }
+.breadcrumb-workspace > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.breadcrumb .slash { flex: none; }
 .breadcrumb strong { color: var(--ink-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slash { opacity: .4; }
 .topbar-actions { display: flex; align-items: center; gap: 6px; }
@@ -313,7 +324,6 @@ strong, b, h1, h2, h3 { font-weight: 600; }
 .thread-link > div > span { font-size: 1rem; line-height: 1.5; }
 .thread-link small { font-size: max(var(--ui-min-font, 10px), 0.8571rem); margin-top: 3px; }
 .group-empty { font-size: max(var(--ui-min-font, 10px), 0.8571rem); padding: 10px; color: var(--muted); }
-.breadcrumb-home { padding: 4px; color: var(--muted); }
 .breadcrumb { font-size: max(var(--ui-min-font, 10px), 0.9286rem); }
 .topbar { height: 64px; }
 .conversation { padding: 0; scrollbar-gutter: stable both-edges; }
@@ -417,7 +427,6 @@ pre, .source-code, .diff-code { font-size: max(var(--ui-min-font, 10px), 0.9286r
   .reference-trigger { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
-.breadcrumb-home { flex-shrink: 0; white-space: nowrap; }
 .breadcrumb strong { flex: 1; min-width: 0; }
 .dtn-layer .dtn-focus-row { font-size: 1rem; }
 .dtn-layer .dtn-section, .dtn-layer .dtn-recent, .dtn-layer .dtn-task-note, .dtn-layer .dtn-confirm-hint { font-size: max(var(--ui-min-font, 10px), 0.8571rem); }
@@ -657,7 +666,6 @@ input[type='checkbox']:not(.switch-control input):not([data-cweb-check]):active 
   .compact-composer .send-actions { gap: 2px; }
   .topbar-actions { gap: 1px; }
   .topbar-actions .local-badge { display: none; }
-  .topbar .breadcrumb > svg, .topbar .breadcrumb-home { display: none; }
   .composer-region { padding-bottom: 14px; }
 }
 .chat-width-handle:focus-visible { outline: none; }
@@ -982,12 +990,14 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .thread-link { color: var(--muted); }
 .thread-link.selected { color: var(--ink); background: var(--surface-raised); box-shadow: inset 0 0 0 1px var(--line); }
 .group-heading > button:first-child { color: var(--ink-secondary); }
-.compact-composer {
+:root {
   --composer-option-bg: color-mix(in srgb, var(--surface-raised) 94%, var(--ink));
   --composer-option-hover: color-mix(in srgb, var(--surface-raised) 89%, var(--ink));
   --composer-option-open: color-mix(in srgb, var(--surface-raised) 86%, var(--ink));
   --composer-option-border: color-mix(in srgb, var(--line-strong) 72%, var(--surface-raised));
   --composer-option-border-active: color-mix(in srgb, var(--line-strong) 92%, var(--ink));
+}
+.compact-composer {
   background: var(--surface-raised); border-color: var(--line-strong); border-radius: 17px; box-shadow: 0 6px 24px #00000010, inset 0 1px 0 #ffffff05; transition: border-color .22s var(--motion-ease), box-shadow .3s var(--motion-ease);
 }
 .compact-composer:focus-within { border-color: var(--accent-border); box-shadow: 0 6px 24px #00000012, 0 0 0 2px var(--accent-wash); }
@@ -1253,11 +1263,11 @@ dialog[data-exiting]::backdrop { animation: backdrop-exit .18s ease both; }
 .navigation-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* Menus anchored above the composer rise from their trigger, then fall away. */
-.compact-composer .composer-select-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 30px; min-height: 30px; padding: 4px 9px; max-width: 190px; border: 1px solid var(--composer-option-border); border-radius: 8px; color: var(--ink-secondary); background: var(--composer-option-bg); font: max(var(--ui-min-font, 10px), 0.8571rem)/1 var(--font-ui); cursor: pointer; transition: background-color .2s var(--motion-ease), border-color .2s var(--motion-ease), color .2s var(--motion-ease); }
+:is(.compact-composer, .topbar) .composer-select-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 30px; min-height: 30px; padding: 4px 9px; max-width: 190px; border: 1px solid var(--composer-option-border); border-radius: 8px; color: var(--ink-secondary); background: var(--composer-option-bg); font: max(var(--ui-min-font, 10px), 0.8571rem)/1 var(--font-ui); cursor: pointer; transition: background-color .2s var(--motion-ease), border-color .2s var(--motion-ease), color .2s var(--motion-ease); }
 .compact-composer .composer-select-trigger > svg { position: static; transform: none; flex: none; pointer-events: none; }.composer-select-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4; }
 .composer-default-badge{display:inline-flex;align-items:center;flex:none;margin-left:1px;padding:2px 4px;border-radius:4px;border:1px solid var(--line);color:var(--muted);font-size:max(var(--ui-min-font,10px),.7rem);font-weight:400;line-height:1.1;white-space:nowrap}.composer-select-popover .composer-default-badge{margin-left:8px;vertical-align:middle}
-.compact-composer .composer-select-trigger:hover { background: var(--composer-option-hover); border-color: var(--composer-option-border-active); color: var(--ink); }
-.compact-composer .composer-select-trigger[aria-expanded='true'] { background: var(--composer-option-open); border-color: var(--composer-option-border-active); color: var(--ink); }
+:is(.compact-composer, .topbar) .composer-select-trigger:hover { background: var(--composer-option-hover); border-color: var(--composer-option-border-active); color: var(--ink); }
+:is(.compact-composer, .topbar) .composer-select-trigger[aria-expanded='true'] { background: var(--composer-option-open); border-color: var(--composer-option-border-active); color: var(--ink); }
 .composer-select-popover { position: fixed; inset: auto; margin: 0; padding: 5px; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--surface-raised); box-shadow: 0 8px 24px #0004; overflow-y: auto; overscroll-behavior: contain; z-index: 120; transform-origin: left bottom; animation: composer-menu-enter .2s cubic-bezier(.16,1,.3,1) both; }
 .composer-select-popover::backdrop { background: transparent; }
 .composer-select-popover > button { width: 100%; min-height: 36px; display: grid; grid-template-columns: 16px minmax(0,1fr); align-items: center; gap: 8px; text-align: left; padding: 8px 10px; border-radius: 7px; font: max(var(--ui-min-font, 10px), 0.9286rem)/1.5 var(--font-ui); color: var(--ink-secondary); background: transparent; }
@@ -1303,3 +1313,30 @@ dialog[data-exiting]::backdrop { animation: backdrop-exit .18s ease both; }
 .context-compact-accepted svg { flex: none; margin-top: 2px; }
 .context-compact-error { color: var(--danger); font-size: max(var(--ui-min-font, 10px), 0.8571rem); line-height: 1.65; overflow-wrap: anywhere; margin: 9px 0 0; }
 @media (max-width: 640px) { .compact-composer .context-usage-trigger { min-width: 40px; gap: 3px; padding-inline: 3px; } }
+
+.conversation-source-filter {
+  flex: none;
+  gap: 6px;
+  max-width: 12em;
+  padding: 4px 8px;
+  min-height: 28px;
+}
+.conversation-source-filter > svg:last-child { color: var(--muted); }
+.composer-select-popover.source-menu { transform-origin: left top; animation-name: source-menu-enter; }
+.composer-select-popover.source-menu[data-exiting] { animation-name: source-menu-exit; }
+.source-menu [role='option'] > span:last-child { display: flex; align-items: center; gap: 8px; }
+@keyframes source-menu-enter { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes source-menu-exit { to { opacity: 0; transform: translateY(-3px); } }
+@media (max-width: 760px) {
+  .conversation-source-filter { padding: 5px; gap: 2px; }
+  .conversation-source-filter > span { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
+}
+
+.team-completion-history { width: min(100%, var(--conversation-width, 880px)); margin: 12px auto; }
+.team-completion-history article { padding: .7rem 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow-wrap: anywhere; }
+.team-completion-history small { display: flex; align-items: center; gap: .4rem; color: var(--muted); flex-wrap: wrap; }
+.team-completion-history small svg { color: var(--success, #68ae91); }
+.team-completion-history time { margin-left: auto; }
+.team-completion-history strong { display: block; margin-top: .4rem; }
+.team-completion-history p { margin: .25rem 0 0; white-space: pre-wrap; }
+.team-completion-history summary { padding: .45rem; font-size: .87rem; color: var(--muted); cursor: pointer; }

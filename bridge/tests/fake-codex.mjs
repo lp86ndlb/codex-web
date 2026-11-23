@@ -139,7 +139,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     const teamName = teamMcpServers.get(params.threadId)
     const data = [
       ...(name ? [{ name, serverInfo: { name: 'cweb-todo-note' }, tools: { todo_note_read: {}, todo_note_update: {}, todo_note_complete: {} } }] : []),
-      ...(teamName ? [{ name: teamName, serverInfo: { name: 'cweb-team' }, tools: { team_members: {}, team_inbox: {}, team_propose_message: {}, team_review_message: {}, team_request_member: {} } }] : []),
+      ...(teamName ? [{ name: teamName, serverInfo: { name: 'cweb-team' }, tools: { team_report_completion: {}, team_members: {}, team_inbox: {}, team_propose_message: {}, team_review_message: {}, team_request_member: {} } }] : []),
     ]
     respond({ data: params.serverName ? data.filter(server => server.name === params.serverName) : data, nextCursor: null })
   }
@@ -207,7 +207,7 @@ createInterface({ input: process.stdin }).on('line', line => {
       requests.set(9002, { thread, turn })
       const questions = [{ id: 'language', header: '语言', question: '选择输出语言', isOther: true, options: [{ label: '中文', description: '中文输出' }, { label: 'English', description: 'English output' }] }]
       if (text.includes('多步')) questions.push({ id: 'detail', header: '细节', question: '选择结果详细程度', isOther: true, options: [{ label: '简洁结果', description: '只显示结论' }, { label: '完整说明', description: '显示过程与结论' }] })
-      send({ id: 9002, method: 'item/tool/requestUserInput', params: { threadId: thread.id, turnId: turn.id, itemId: 'question', questions } })
+      send({ id: 9002, method: 'item/tool/requestUserInput', params: { threadId: thread.id, turnId: turn.id, itemId: 'question', questions: process.env.FAKE_QUESTIONS ? JSON.parse(process.env.FAKE_QUESTIONS) : questions } })
       return
     }
     const answer = { id: randomUUID(), type: 'agentMessage', text: '', phase: 'final_answer' }

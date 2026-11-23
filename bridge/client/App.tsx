@@ -4,14 +4,16 @@ import type { ActivityView } from '../shared/types.ts'
 import { todoCountEvent } from '../shared/todo-count.ts'
 import { withModelDefaults } from '../shared/session-options.ts'
 import { observeActivity, retainThreadViews } from './view-cache.ts'
-import { Archive, ArrowDown, ArrowRight, ArrowUp, Check, ChevronDown, Code2, Command, FileSearch, Folder, GitBranch, Upload, RefreshCw, Braces, SquareTerminal, LoaderCircle, Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Plus, Search, Settings, Settings2, ShieldCheck, Sparkles, Square, Sun, X } from 'lucide-react'
+import { ArrowDown, ArrowRight, ArrowUp, Check, ChevronDown, Code2, Command, FileSearch, Folder, GitBranch, Eye, EyeOff, Upload, RefreshCw, SquareTerminal, LoaderCircle, Menu, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRight, Pencil, Plus, Search, Settings, Settings2, ShieldCheck, Sparkles, Square, Sun, X } from 'lucide-react'
 import { defaultPreferences, type Approval, type Bootstrap, type WorkspaceInfo, type RuntimeStatus, type StreamEvent, type ThreadSummary, type ThreadView, type Preferences, type SessionOptions, type AttachmentInfo, type SkillInfo, type QueuedMessage, type GenuiPanelInfo, type ThreadGoal, type Item } from '../shared/types.ts'
 import { api, message, setToken, upload, ApiError, uncertainSubmission } from './api.ts'
 import { ApprovalStack, IconButton, Notice, TranscriptItem } from './components.tsx'
 
 import { WorkspaceGroups, WorkspaceHome, workspaceFor } from './Workspaces.tsx'
 import { Inspector, type InspectorTab } from './Inspector.tsx'
-import { useTeam } from './useTeam.ts'
+import { useDesktopNotifications } from './useDesktopNotifications.ts'
+import { TeamCompletionHistory } from './TeamCompletionHistory.tsx'
+import { teamPath, useTeam } from './useTeam.ts'
 import { TeamApprovals } from './TeamApprovals.tsx'
 import { TeamQueue } from './TeamQueue.tsx'
 import { WorkspaceMenu, type WorkspaceMenuTarget } from './WorkspaceMenu.tsx'
@@ -24,6 +26,7 @@ import { SettingsPanel, type SettingsTab } from './SettingsPanel.tsx'
 import { CommandPalette } from './CommandPalette.tsx'
 import { commands } from './commands.ts'
 import { GenuiProvider, GenuiPanel } from './GenuiHost.tsx'
+import { useConversationDisplay } from './useConversationDisplay.ts'
 import { Transcript, type MessageJump } from './Transcript.tsx'
 import { mergeView, applyThreadPatch } from './thread-state.ts'
 import { ChoiceDock, ChoiceProvider, type ChoiceAnswer } from './ChoiceHost.tsx'
@@ -33,7 +36,7 @@ import { useConversationScroll } from './useConversationScroll.ts'
 import { UsagePopover } from './UsagePopover.tsx'
 import { TurnNavigator } from './TurnNavigator.tsx'
 import { GoalPanel, type GoalPanelHandle } from './GoalPanel.tsx'
-import { ThreadNotices, useThreadNotices } from './ThreadNotices.tsx'
+import { ThreadNotices, useThreadNotices, type VisibleNotice } from './ThreadNotices.tsx'
 import { Presence, useExitAction } from './Motion.tsx'
 import { threadReadEvent } from '../shared/navigation-order.ts'
 import { isThreadRunning, runStage, RunStatus, SessionFeedback } from './RunTimer.tsx'
@@ -238,6 +241,8 @@ export function App() {
   useEffect(() => { if (workspaceMenu) void team.loadIndex() }, [workspaceMenu?.workspaceId, team.loadIndex])
   const activeCwd = thread?.cwd || selectedSummary?.cwd || activeWorkspace?.path || ''
   const home = !selected && !activeWorkspace
+  const workspaceLabel = activeWorkspace?.name || (activeCwd && baseName(activeCwd))
+  const locationTitle = teamVisible ? '团队关系' : home ? '所有工作区' : thread?.title || selectedSummary?.title || '新会话'
   const draftKey = selected || `new:${workspaceId || ''}`
   const draft = drafts[draftKey] || ''
   const currentDraftKey = useRef(draftKey); currentDraftKey.current = draftKey
@@ -251,13 +256,40 @@ export function App() {
   const currentDeliveries = useMemo(() => pendingMessages.filter(row => row.key === draftKey && !echoedMessage(row, thread)), [pendingMessages, draftKey, thread])
   const pendingMessage = currentDeliveries.find(row => row.state !== 'unrecorded')
   const displayedThread = useMemo(() => withPendingMessage(thread, pendingMessage), [thread, pendingMessage])
+  const conversationDisplay = useConversationDisplay(displayedThread, activeWorkspace?.id || '', team.state?.messages)
   useEffect(() => { setPendingMessages(previous => previous.some(row => echoedMessage(row, views[row.key])) ? previous.filter(row => !echoedMessage(row, views[row.key])) : previous) }, [views])
   const running = isThreadRunning(thread)
   const activeRunStage = runStage(thread)
   const todoLinkPending = queue.some(row => row.threadId === selected && row.kind === 'todo-link' && !row.error) || Boolean(running && thread?.items.findLast(item => item.type === 'userMessage')?.text.startsWith('请关联本会话的待办便签：'))
   const currentApprovals = useMemo(() => approvals.filter(approval => approval.threadId === selected), [approvals, selected])
   const connected = runtime.state === 'ready' && streamConnected
-  const { notices, dismiss: dismissNotice } = useThreadNotices(threads, activityViews, approvals, connected, selected)
+  const { notify, setting: desktopNotifications } = useDesktopNotifications(notice => {
+    setSettings(false)
+    jumpToNotice(notice.id, notice.reportId)
+    dismissNotice(notice.key, true)
+  })
+  const liveCompletion = useRef(notify); liveCompletion.current = notify
+  const { notices: activityNotices, dismiss: dismissActivityNotice } = useThreadNotices(threads, activityViews, approvals, connected, selected, notify)
+  const [reportTarget, setReportTarget] = useState<string>()
+  const completionNotices = useMemo(() => {
+    const scopes = team.pilot
+      ? [{ id: undefined, unread: team.state?.completions?.filter(row => !row.readAt), path: team.state?.workspace }]
+      : team.workspaces.map(w => ({ ...w, path: workspaces.find(row => row.id === w.id)?.path }))
+    return scopes.flatMap(scope => (scope.unread ?? []).map(report => ({
+      kind: 'team-completion' as const, key: 'report:' + report.id, reportId: report.id, workspaceId: scope.id,
+      id: report.threadId, cwd: scope.path || '', title: report.title, sender: report.sender, updatedAt: report.createdAt,
+    })))
+  }, [team.pilot, team.state?.completions, team.state?.workspace, team.workspaces, workspaces])
+  const notices = useMemo<VisibleNotice[]>(() => [...activityNotices, ...completionNotices].sort((a, b) => a.updatedAt - b.updatedAt), [activityNotices, completionNotices])
+  function dismissNotice(key: string, read?: boolean) {
+    const report = completionNotices.find(row => row.key === key)
+    if (!report) return dismissActivityNotice(key, read)
+    void api(teamPath('/team/completions/read', report.workspaceId), { id: report.reportId })
+      .then(() => window.dispatchEvent(new CustomEvent('cweb:team-changed', { detail: { workspaceId: report.workspaceId } })))
+      .catch(error => setError(message(error)))
+  }
+  useEffect(() => { completionNotices.forEach(notify) }, [completionNotices, notify])
+  const selectedReports = useMemo(() => team.state?.completions?.filter(row => row.threadId === selected) ?? [], [team.state?.completions, selected])
   useEffect(() => { setAvailableSkills([]) }, [activeWorkspace?.id])
   useEffect(() => {
     if (!boot || !activeWorkspace) return
@@ -296,7 +328,7 @@ export function App() {
     requestAnimationFrame(() => { composer.current?.focus(); composer.current?.setSelectionRange(0, composer.current.value.length) })
   }, [])
   const forkMessage = useCallback((item: Item) => { if (selectedRef.current) setNativeAction({ kind: 'fork', threadId: selectedRef.current, beforeTurnId: item.turnId }) }, [])
-  const history = useMemo(() => [...new Set((thread?.items || []).filter(item => item.type === 'userMessage' && item.text).map(item => item.text).reverse())], [thread?.items])
+  const history = useMemo(() => [...new Set((thread?.items || []).filter(item => item.type === 'userMessage' && item.text && !conversationDisplay.sources.team.has(item.id)).map(item => item.text).reverse())], [thread?.items, conversationDisplay.sources])
   const activeChoiceMessage = useMemo(() => pendingChoiceMessage(thread?.items || [])?.id || '', [thread?.items])
   const theme = prefs.theme === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : prefs.theme
   useEffect(() => {
@@ -353,6 +385,7 @@ export function App() {
         const id = selectedRef.current
         // Bootstrap/selection already fetches the first view. Only a native SSE
         // reconnection needs this extra read to recover events it missed.
+        window.dispatchEvent(new Event('cweb:team-changed'))
         if (opened && id) void readThread(id).promise.then(value => { if (!cancelled) updateViews(previous => mergeView(previous, value)) }).catch(() => {})
         opened = true
       }
@@ -391,6 +424,9 @@ export function App() {
           }
         }
         else if (value.type === 'approvals') setApprovals(value.approvals)
+        else if (value.type === 'turnFinished') liveCompletion.current({
+          id: value.threadId, key: `${value.threadId}:completed:${value.turnId}`, title: value.title, updatedAt: value.completedAt,
+        })
         else if (value.type === 'teamChanged') window.dispatchEvent(new CustomEvent('cweb:team-changed', { detail: { workspaceId: value.workspaceId } }))
         else if (value.type === 'runtime') { setRuntime(value.runtime); if (value.runtime.state === 'failed') scheduleReconnect() }
         else if (value.type === 'workspaces') setWorkspaces(value.workspaces)
@@ -430,7 +466,7 @@ export function App() {
       const inComposer = document.activeElement === composer.current
       if (palette || settings || workspaceDialog || renameDialog) return
       if (event.shiftKey && !mod && !event.altKey && ['ArrowLeft', 'ArrowRight'].includes(event.key) && thread && (inComposer && !draft || document.activeElement === document.body || document.activeElement === transcript.current) && !window.getSelection()?.toString()) {
-        const prompts = thread.items.filter(item => item.type === 'userMessage')
+        const prompts = conversationDisplay.items.filter(item => item.type === 'userMessage')
         if (!prompts.length) return
         const current = jumpTarget?.id ? prompts.findIndex(item => item.id === jumpTarget.id) : prompts.length
         if (event.key === 'ArrowLeft') { event.preventDefault(); navigateMessage(prompts[Math.max(0, current - 1)]?.id || prompts.at(-1)!.id) }
@@ -615,7 +651,7 @@ export function App() {
   function runCommand(id: string) {
     setPalette(null)
     if (id === '/fork' || id === '/review') { if (selected && boot?.capabilities?.nativeActions) setNativeAction({ kind: id === '/fork' ? 'fork' : 'review', threadId: selected }); else setError('请先打开会话，并确认后端已更新。'); return }
-    const tabs: Record<string, SettingsTab> = { '/model': 'models', '/permissions': 'models', '/skills': 'skills', '/settings': 'general', '/status': 'status', '/archives': 'archives', '/help': 'shortcuts', '/doctor': 'connection' }
+    const tabs: Record<string, SettingsTab> = { '/model': 'models', '/permissions': 'models', '/skills': 'skills', '/settings': 'general', '/team': 'team', '/status': 'status', '/archives': 'archives', '/help': 'shortcuts', '/doctor': 'connection' }
     if (tabs[id]) { openSettings(tabs[id]); return }
     if (['/plan', '/goal'].includes(id) && !activeWorkspace) { setError('请先选择一个工作区。'); return }
     if (id === '/plan') {
@@ -884,6 +920,7 @@ export function App() {
     setReferenceDrafts(previous => ({ ...previous, [key]: [...new Set([...(previous[key] || []), path])].slice(0, 20) }))
     requestAnimationFrame(() => composer.current?.focus())
   }, [])
+  const pendingTeamRequest = team.state?.enabled && team.state.messages.find(row => row.state === 'pending' && (row.from === selected || row.to === selected))
   function openTeamApprovals() { if (!team.state?.enabled) { setToast('开启团队模式后可查看和处理审批，已有请求会保留'); return }; setInspectorTab('team'); setGenuiOpen(false); setInspector(true) }
   const reviewQueuedCommunication = useCallback((id: string) => {
     if (!team.state?.enabled) return
@@ -914,7 +951,7 @@ export function App() {
 
   const resizeSidebar = (width: number) => setSidebarWidth(Math.max(210, Math.min(420, width)))
   function openSidebarNavigation() { setSidebarCollapsed(false); setSidebar(mobile); try { localStorage.setItem('cweb:sidebar-collapsed', 'false') } catch {} }
-  function jumpToNotice(id: string) { setSearch(''); chooseThread(id); openSidebarNavigation(); setRevealThread({ id, seq: ++revealSequence.current }) }
+  function jumpToNotice(id: string, reportId?: string) { setReportTarget(reportId); setSearch(''); chooseThread(id); openSidebarNavigation(); setRevealThread({ id, seq: ++revealSequence.current }) }
   const menuSummary = threads.find(row => row.id === threadMenu?.threadId), menuView = activityViews[threadMenu?.threadId || '']
   const menuUnavailable = menuView?.externalOwner ? '会话正在另一端运行，结束后可归档或转到终端' : menuView?.compacting ? '正在压缩上下文，请稍候' : menuView?.status === 'inProgress' || menuSummary?.status === 'inProgress' ? '任务运行中，结束后可归档或转到终端' : queue.some(row => row.threadId === threadMenu?.threadId) ? '会话还有排队消息，请先处理队列' : ''
   const toggleSidebar = () => { setSidebar(false); setSidebarCollapsed(value => { try { localStorage.setItem('cweb:sidebar-collapsed', String(!value)) } catch {} return !value }) }
@@ -932,12 +969,21 @@ export function App() {
     </aside>
 
     <main className={`main ${dropping ? 'dragging-files' : ''}`} ref={main} onDragEnter={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current++; setDropping(true) } }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }} onDragLeave={event => { if (event.dataTransfer.types.includes('Files') && --dragDepth.current <= 0) { dragDepth.current = 0; setDropping(false) } }} onDrop={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current = 0; setDropping(false); void addFiles(Array.from(event.dataTransfer.files)) } }} >
-      <Presence show={dropping} className="file-drop-overlay"><Upload size={32} /><strong>松开以添加附件</strong><span>图片与文件 · 每个不超过 20 MB</span></Presence><header className="topbar"><IconButton label="打开会话列表" className="mobile-menu" onClick={() => setSidebar(true)}><Menu size={18} /></IconButton><IconButton label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} className="desktop-sidebar-toggle" onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</IconButton>{(teamAvailable || activeWorkspace) && <div className="team-mode-switch" aria-label="工作区视图"><button aria-pressed={!teamVisible} onClick={() => setTeamOpen(false)}>对话</button><button aria-pressed={teamVisible} onClick={() => openTeam(activeWorkspace || workspaces[0])}>团队</button></div>}<div className="breadcrumb"><Folder size={15} /><button className="breadcrumb-home" onClick={() => newThread(null)} disabled={busy}>工作区</button>{!home && <><span className="slash">/</span><span>{activeWorkspace?.name || baseName(activeCwd)}</span><span className="slash">/</span><strong>{teamVisible ? '团队关系' : thread?.title || selectedSummary?.title || '新会话'}</strong></>}</div><div className="topbar-actions">{prefs.genui && <IconButton label="GenUI 交互面板" onClick={openGenui}><Braces size={17} /></IconButton>}<IconButton label="快捷命令" onClick={() => setPalette('commands')}><Command size={16} /></IconButton>{selected && !teamVisible && <>{boot?.capabilities?.nativeActions && <IconButton label="分支与原生审查" onClick={() => setNativeAction({ kind: 'fork', threadId: selected })}><GitBranch size={16} /></IconButton>}<IconButton label="复制终端继续命令" disabled={running || busy} onClick={() => void terminalResume()}><SquareTerminal size={16} /></IconButton><IconButton label="重命名会话" onClick={() => { if (selected) renameThread(selected) }}><Pencil size={15} /></IconButton><IconButton label="归档会话" onClick={() => void archive()} disabled={running || Boolean(thread?.externalOwner)}><Archive size={15} /></IconButton></>}<span className={`badge local-badge run-badge ${running ? 'is-running' : ''}`} role="status"><span className={`status-dot ${currentApprovals.length || thread?.choicePending ? 'waiting' : thread?.status === 'completed' ? 'complete' : ''}`} />{loadingThread ? '载入中' : currentApprovals.length ? '待确认' : thread?.choicePending ? '待回复' : running ? activeRunStage === 'compacting' ? '压缩中' : activeRunStage === 'retrying' ? '重试中' : '处理中' : thread?.status === 'completed' ? '已完成' : thread?.status === 'failed' ? '已失败' : thread?.status === 'interrupted' ? '已停止' : '本地'}</span><IconButton disabled={!activeWorkspace} label={inspector ? '隐藏工作区面板' : '显示工作区面板'} onClick={toggleInspector}><PanelRight size={17} /></IconButton></div></header>
+      <Presence show={dropping} className="file-drop-overlay"><Upload size={32} /><strong>松开以添加附件</strong><span>图片与文件 · 每个不超过 20 MB</span></Presence><header className="topbar"><IconButton label="打开会话列表" className="mobile-menu" onClick={() => setSidebar(true)}><Menu size={18} /></IconButton><IconButton label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'} className="desktop-sidebar-toggle" onClick={toggleSidebar}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</IconButton>{(teamAvailable || activeWorkspace) && <div className="team-mode-switch" aria-label="工作区视图"><button aria-pressed={!teamVisible} onClick={() => setTeamOpen(false)}>对话</button><button aria-pressed={teamVisible} onClick={() => openTeam(activeWorkspace || workspaces[0])}>团队</button></div>}
+        <div className="breadcrumb">
+          {workspaceLabel && !home && <><span className="breadcrumb-workspace" title={activeWorkspace?.path || activeCwd}><Folder size={15} aria-hidden="true" /><span>{workspaceLabel}</span></span><span className="slash" aria-hidden="true">/</span></>}
+          <strong title={locationTitle}>{locationTitle}</strong>
+        </div>
+        <div className="topbar-actions"><IconButton label="快捷命令" onClick={() => setPalette('commands')}><Command size={16} /></IconButton>{selected && !teamVisible && <>{boot?.capabilities?.nativeActions && <IconButton label="分支与原生审查" onClick={() => setNativeAction({ kind: 'fork', threadId: selected })}><GitBranch size={16} /></IconButton>}<IconButton label="复制终端继续命令" disabled={running || busy} onClick={() => void terminalResume()}><SquareTerminal size={16} /></IconButton></>}{!teamVisible && selected && conversationDisplay.hasDeliveries && <button type="button" className="composer-select-trigger conversation-source-filter" onClick={() => conversationDisplay.setDisplay(conversationDisplay.display === 'show' ? 'hide' : 'show')} title={conversationDisplay.display === 'hide' ? '在对话中显示团队消息' : '从对话中隐藏团队消息'}>
+          {conversationDisplay.display === 'hide' ? <Eye size={15} aria-hidden="true" /> : <EyeOff size={15} aria-hidden="true" />}
+          <span>{conversationDisplay.display === 'hide' ? '显示团队' : '隐藏团队'}</span>
+        </button>}<span className={`badge local-badge run-badge ${running ? 'is-running' : ''}`} role="status"><span className={`status-dot ${currentApprovals.length || thread?.choicePending ? 'waiting' : thread?.status === 'completed' ? 'complete' : ''}`} />{loadingThread ? '载入中' : currentApprovals.length ? '待确认' : thread?.choicePending ? '待回复' : running ? activeRunStage === 'compacting' ? '压缩中' : activeRunStage === 'retrying' ? '重试中' : '处理中' : thread?.status === 'completed' ? '已完成' : thread?.status === 'failed' ? '已失败' : thread?.status === 'interrupted' ? '已停止' : '本地'}</span><IconButton disabled={!activeWorkspace} label={inspector ? '隐藏工作区面板' : '显示工作区面板'} onClick={toggleInspector}><PanelRight size={17} /></IconButton></div></header>
       {teamVisible ? <TeamGraph key={team.scope} team={team} models={boot?.models || []} defaults={prefs} focusId={teamFocus} onSelect={locateTeamMessage} onApprovals={openTeamApprovals} onChoose={chooseThread} /> : <>
       <div className="conversation-stage"><div className="conversation" ref={transcript} tabIndex={0} aria-label="会话内容"><div ref={transcriptContent} className="conversation-content">
         {home ? !boot ? <div className="workspace-home workspace-loading" role="status" aria-label="正在加载工作区"><BrandMark size={26} /><p>正在载入工作台…</p><div className="conversation-skeleton" aria-hidden="true"><i /><i /><i /></div></div> : <WorkspaceHome workspaces={workspaces} threads={threads} onOpen={newThread} onAdd={addWorkspaceDialog} onThread={chooseThread} /> : !selected ? pendingMessage ? <div className="transcript"><TranscriptItem item={pendingMessage.item} /></div> : <div className="welcome"><div className="welcome-eyebrow"><span />你的代码，你的工作区</div><h1>让想法，<br /><span>在这里开始。</span></h1><p>与 Codex 一起理解、构建和打磨项目。<br />每一次执行，都在你的本机。</p><div className="starter-grid">{starters.map(starter => <button key={starter.title} className="starter" onClick={() => { setDraft(starter.prompt); requestAnimationFrame(() => composer.current?.focus()) }}><div className="starter-icon">{starter.icon}<ArrowRight size={14} /></div><strong>{starter.title}</strong><span>{starter.detail}</span></button>)}</div><div className="welcome-note"><ShieldCheck size={14} />执行前可审批，过程可查看，随时可停止</div></div>
           : !thread && threadLoadError?.id === selected ? <div className="thread-empty" role="status"><p>会话暂未载入，请重试。</p></div>
-          : <Transcript key={selected} thread={displayedThread} loading={loadingThread} onLoadOlder={loadOlderHistory} approvals={currentApprovals.length} expanded={prefs.showActivityDetails} collapseTiming={prefs.activityCollapseTiming || 'next-input'} jumpTo={jumpTarget} follow={follow} paused={awayFromBottom || historyNavigation} onEdit={editMessage} onFork={boot?.capabilities?.nativeActions ? forkMessage : undefined} editDisabled={busy || Boolean(pendingMessage)} />}
+          : <Transcript key={selected + conversationDisplay.display} thread={conversationDisplay.view} filterEmpty={conversationDisplay.display === 'hide' && conversationDisplay.sources.team.size ? '当前载入范围内没有个人对话' : undefined} loading={loadingThread} onLoadOlder={loadOlderHistory} approvals={currentApprovals.length} expanded={prefs.showActivityDetails} collapseTiming={prefs.activityCollapseTiming || 'next-input'} jumpTo={jumpTarget} follow={follow} paused={awayFromBottom || historyNavigation} onEdit={editMessage} onFork={boot?.capabilities?.nativeActions ? forkMessage : undefined} editDisabled={busy || Boolean(pendingMessage)} />}
+        {!home && selectedReports.length > 0 && <TeamCompletionHistory reports={selectedReports} target={reportTarget} />}
       </div></div><div className="composer-dock" ref={composerDock}><div className={`composer-region ${home ? 'home-notices' : ''}`}>
         {(awayFromBottom || historyNavigation) && !home && <button type="button" className="scroll-to-bottom" onClick={showLatest}><ArrowDown size={15} />回到底部</button>}
         <div className="composer-support">
@@ -951,6 +997,7 @@ export function App() {
         {thread?.externalOwner && <div className="connection-notice session-notice"><span>这个会话正在终端运行。你可以先写草稿，等任务结束后再从网页发送。</span><button type="button" disabled={handoffBusy || !connected} onClick={() => void handoff()}>{handoffBusy ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}检查能否继续</button></div>}
         {pluginEnabled && thread?.todoTools === 'waiting' && !thread.externalOwner && <div className="connection-notice session-notice"><span>待办工具等待会话重新载入；如果另一端仍打开此会话，请先退出该会话。</span><button disabled={handoffBusy || running || !connected} onClick={() => void connectTodo()}><RefreshCw size={14} />检查待办连接</button></div>}
         {draftSaveError && <Notice text={draftSaveError} />}
+        {!home && pendingTeamRequest && <div className="connection-notice" role="status"><ShieldCheck size={15} /><span>团队通信待你确认 · {pendingTeamRequest.title}</span><button type="button" onClick={() => reviewQueuedCommunication(pendingTeamRequest.id)}>查看并审批</button></div>}
         <ApprovalStack approvals={currentApprovals} onError={setError} />
         <ChoiceDock />
         </div>
@@ -972,23 +1019,28 @@ export function App() {
           teamQueue={<TeamQueue key={`${team.scope}:${selected || ''}`} team={team.state} threadId={selected || undefined} manualQueueCount={queue.filter(row => row.threadId === selected).length} onReview={reviewQueuedCommunication} onCombine={combineQueuedCommunication} saving={team.saving} />}
           queue={queue.filter(row => row.threadId === selected)} onQueue={(id, retry) => void api(`/queue/${id}/${retry ? 'retry' : 'remove'}`, {}).catch(error => setError(message(error)))} />}
 
-      </div></div>{thread && <TurnNavigator items={thread.items} viewport={transcript} onNavigate={navigateMessage} />}<ThreadNotices notices={notices} workspaces={workspaces} onJump={jumpToNotice} onDismiss={dismissNotice} /></div>
+      </div></div>{thread && <TurnNavigator items={conversationDisplay.items} viewport={transcript} onNavigate={navigateMessage} />}<ThreadNotices notices={notices} workspaces={workspaces} onJump={jumpToNotice} onDismiss={dismissNotice} /></div>
     </>}
     {teamVisible && <ThreadNotices notices={notices} workspaces={workspaces} onJump={jumpToNotice} onDismiss={dismissNotice} />}
     </main>
     {genuiOpen && <GenuiPanel panels={genuiPanels} closing={genuiExit.closing} onClose={closeGenui} />}
-    {!genuiOpen && inspector && activeWorkspace && <Inspector key={activeWorkspace.id} cwd={activeCwd} root={activeWorkspace.path} workspaceId={activeWorkspace.id} thread={thread} closing={inspectorExit.closing} tab={inspectorTab} onTab={setInspectorTab} todoEnabled={todoInSidebar} todo={todoPanel} streamConnected={streamConnected} team={team.state?.enabled ? <TeamApprovals team={team} focusId={teamFocus} onLocate={locateTeamMessage} onChoose={chooseThread} defaults={prefs} previewPreferences={prefs} /> : undefined} teamCount={team.outstanding} onReference={referenceFile} onClose={closeInspector} />}
+    {!genuiOpen && inspector && activeWorkspace && <Inspector key={activeWorkspace.id} cwd={activeCwd} root={activeWorkspace.path} workspaceId={activeWorkspace.id} thread={thread} closing={inspectorExit.closing} tab={inspectorTab} onTab={setInspectorTab} todoEnabled={todoInSidebar} todo={todoPanel} streamConnected={streamConnected} team={team.state?.enabled ? <TeamApprovals onSettings={() => openSettings('team')} team={team} focusId={teamFocus} onLocate={locateTeamMessage} onChoose={chooseThread} defaults={prefs} previewPreferences={prefs} /> : undefined} teamCount={team.outstanding} onReference={referenceFile} onClose={closeInspector} />}
     {!todoInSidebar && todoPanel}
 
 
-    <dialog ref={dialog} data-exiting={dialogExit.closing || undefined} className={`settings-dialog ${settings ? 'categorized-settings' : ''} ${workspaceDialog && !workspaceEditing ? 'workspace-dialog' : ''}`} onCancel={event => { event.preventDefault(); closeDialogs() }} onClick={event => { if (event.target === dialog.current) { const box = dialog.current.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeDialogs() } }}>
+    <dialog ref={dialog} data-exiting={dialogExit.closing || undefined} className={`settings-dialog ${settings ? 'categorized-settings' : ''} ${workspaceDialog && !workspaceEditing ? 'workspace-dialog' : ''}`} onCancel={event => { event.preventDefault(); closeDialogs() }} onKeyDown={event => {
+      // A switch can lose focus while its save disables it, before native dialog cancellation.
+      if (event.key === 'Escape' && !event.defaultPrevented && event.target instanceof HTMLInputElement && event.target.type === 'checkbox') {
+        event.preventDefault(); closeDialogs()
+      }
+    }} onClick={event => { if (event.target === dialog.current) { const box = dialog.current.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeDialogs() } }}>
       <div className="dialog-header"><h2>{workspaceDialog ? workspaceEditing ? '重命名工作区' : '添加工作区' : renameDialog ? '重命名会话' : '连接与设置'}</h2><IconButton label="关闭对话框" onClick={closeDialogs}><X size={18} /></IconButton></div>
       {workspaceDialog ? <form className={workspaceEditing ? '' : 'workspace-dialog-form'} onSubmit={event => { event.preventDefault(); void chooseWorkspace() }}>
         {workspaceEditing ? <p className="muted">名称用于整理工作区，不会移动项目目录。</p> : <><p className="workspace-dialog-intro">选择一个项目文件夹，接着开始你的会话。</p><DirectoryPicker initialPath={activeWorkspace?.path || workspaces[0]?.path} workspaces={workspaces} onSelect={setDirectoryDraft} disabled={workspaceSaving} /></>}
         <div className="workspace-dialog-details"><label className="field-label">工作区名称{!workspaceEditing && '（可选）'}<input autoFocus={Boolean(workspaceEditing)} value={nameDraft} disabled={workspaceSaving} maxLength={80} onChange={event => setNameDraft(event.target.value)} placeholder="默认使用文件夹名称" /></label>{error && <Notice text={error} />}<div className="dialog-footer"><button type="button" disabled={workspaceSaving} onClick={closeDialogs}>取消</button><button className="primary" type="submit" disabled={workspaceSaving || (workspaceEditing ? !nameDraft.trim() : !directoryDraft)}>{workspaceSaving ? <><LoaderCircle size={15} className="spin" />正在打开…</> : workspaceEditing ? '保存工作区名称' : '打开工作区'}</button></div></div>
       </form>
         : renameDialog ? <form onSubmit={event => { event.preventDefault(); void saveThreadName() }}><label className="field-label">会话名称<input autoFocus value={nameDraft} maxLength={120} onChange={event => setNameDraft(event.target.value)} /></label>{error && <Notice text={error} />}<div className="dialog-footer"><button className="primary" disabled={renameSaving || !nameDraft.trim()}>{renameSaving ? '正在保存…' : '保存名称'}</button></div></form>
-          : settings && <SettingsPanel online={online} runtime={runtime} thread={thread} tab={settingsTab} onTab={tab => { setLoadingFocus(false); setSettingsTab(tab) }} boot={boot} connected={connected} preferences={prefs} onPreferences={updatePreferences} loadingStyle={loadingStyle} onLoadingStyle={changeLoadingStyle} loadingFocus={loadingFocus}
+          : settings && <SettingsPanel desktopNotifications={desktopNotifications} teamDisplay={conversationDisplay.display} onTeamDisplay={conversationDisplay.setDisplay} team={team} online={online} runtime={runtime} thread={thread} tab={settingsTab} onTab={tab => { setLoadingFocus(false); setSettingsTab(tab) }} boot={boot} connected={connected} preferences={prefs} onPreferences={updatePreferences} loadingStyle={loadingStyle} onLoadingStyle={changeLoadingStyle} loadingFocus={loadingFocus}
             current={selected ? { title: thread?.title || '当前会话', options: currentOptions, model: thread?.model, tokens: thread?.tokens } : undefined} onCurrent={changeOptions}
             workspaces={workspaces} workspaceId={activeWorkspace?.id} onUseSkill={useSkill} plugin={pluginEnabled} pluginSaving={pluginSaving} onPlugin={enabled => void togglePlugin(enabled)}
             onReconnect={() => setReload(value => value + 1)} onRestored={id => { closeDialogs(); chooseThread(id) }} />}

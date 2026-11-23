@@ -8,14 +8,23 @@
 .composer-support:empty { display: none; }
 .question-panel-scroll { max-height: min(27dvh, 280px); }
 .composer-support > .choice-dock, .composer-support > .approval-stack { display: flex; flex-direction: column; min-height: 0; flex-shrink: 1; }
+.approval-stack:has(.question-panel-body[data-open] .question-fields) { max-height: none; }
 .question-panel { display: flex; flex-direction: column; min-height: 0; }
 .question-panel-heading { flex-shrink: 0; }
 .question-panel-body { min-height: 0; flex: 1 1 auto; }
 .question-panel-body > div { display: flex; min-height: 0; }
 .question-panel-scroll { min-height: 0; width: 100%; }
-.question-panel-scroll:has(.question-fields) { display: flex; overflow: hidden; }
+.question-panel-scroll:has(.question-fields) { display: flex; overflow: hidden; max-height: min(47dvh, 32rem); }
+.composer-dock:has(.plan-mode-banner):has(:where(.question-panel-body[data-open] .question-fields)) { max-height: 74%; }
+.question-panel-heading > .question-size { width: auto; gap: 5px; padding-inline: 7px; font-size: .85rem; }
+.question-panel-heading > .question-size + button { margin-left: 0; }
+.composer-dock:has(.question-size[aria-pressed="true"]) { max-height: 94%; }
+.composer-region:has(.question-size[aria-pressed="true"]) .compact-composer { display: none; }
+.question-panel:has(.question-size[aria-pressed="true"]) .question-panel-scroll { max-height: 86dvh; }
 .question-panel .approval-card:has(.question-fields) { display: flex; flex-direction: column; min-height: 0; width: 100%; }
 .question-fields { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.question-fields legend, .question-fields .answer-choice { overflow-wrap: anywhere; }
+.question-fields .answer-choice > span { min-width: 0; }
 .question-panel .approval-title, .question-panel .question-navigation { flex-shrink: 0; }
 .question-panel .approval-card { padding-bottom: 8px; }
 .question-panel .choice-question, .question-panel .questionnaire legend { font-size: var(--chat-font-size); line-height: 1.45; padding-bottom: 7px; }

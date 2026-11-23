@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronUp, MessageCircleQues
 import { messageChoices, parseChoice, textChoices, type ChoiceSpec } from '../shared/choices.ts'
 import type { Item } from '../shared/types.ts'
 import { Checkbox } from './dsh/Checkbox.tsx'
+import { QuestionSizeButton } from './QuestionSizeButton.tsx'
 import { Presence, useExitAction } from './Motion.tsx'
 
 export interface ChoiceAnswer { question: string; answers: string[] }
@@ -94,7 +95,15 @@ function DockedChoice({ panel, host }: { panel: Panel; host: Host }) {
   const chosen = (label: string) => review ? (panel.saved[spec.id] || '').split('、').includes(label) : values(spec.id).includes(label)
   function collapse() { if (review) host.close(); else setExpanded(false); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()) }
   function previous() { if (busy || step.closing) return; if (index > 0) step.exit(() => setIndex(index - 1)); else collapse() }
-  useEffect(() => { if (expanded) { const frame = requestAnimationFrame(() => (field.current?.querySelector<HTMLElement>('input:checked:not(:disabled)') || field.current?.querySelector<HTMLElement>('input:not(:disabled)') || root.current?.querySelector<HTMLElement>('.question-panel-heading button'))?.focus()); return () => cancelAnimationFrame(frame) } }, [expanded, panel.reveal, index])
+  useEffect(() => {
+    if (!expanded) return
+    const frame = requestAnimationFrame(() => {
+      const target = field.current?.querySelector<HTMLElement>('input:checked:not(:disabled)') || field.current?.querySelector<HTMLElement>('input:not(:disabled)') || root.current?.querySelector<HTMLElement>('.question-panel-heading button[aria-expanded]')
+      target?.focus({ preventScroll: true })
+      field.current?.closest('.question-fields')?.scrollTo(0, 0)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [expanded, panel.reveal, index])
   async function next() {
     if (busy || step.closing || !review && !values(spec.id).some(Boolean)) return
     if (!last) { step.exit(() => setIndex(index + 1)); return }
@@ -115,7 +124,7 @@ function DockedChoice({ panel, host }: { panel: Panel; host: Host }) {
     if (/^[1-9]$/.test(event.key) && option) { event.preventDefault(); setCustom(previous => ({ ...previous, [spec.id]: false })); setSelected(previous => ({ ...previous, [spec.id]: spec.multiple ? previous[spec.id]?.includes(option.label) ? previous[spec.id].filter(row => row !== option.label) : [...previous[spec.id] || [], option.label] : [option.label] })) }
     else if (event.key === 'Enter' && input) { event.preventDefault(); void next() }
   }}>
-    <header className="question-panel-heading"><MessageCircleQuestion size={16} /><strong>{review ? '查看历史选择' : '等待你的回答'}</strong>{panel.specs.length > 1 && <small>{index + 1} / {panel.specs.length}</small>}<button type="button" aria-label={expanded ? '收起问题' : '展开问题'} aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</button></header>
+    <header className="question-panel-heading"><MessageCircleQuestion size={16} /><strong>{review ? '查看历史选择' : '等待你的回答'}</strong>{panel.specs.length > 1 && <small>{index + 1} / {panel.specs.length}</small>}{expanded && <QuestionSizeButton />}<button type="button" aria-label={expanded ? '收起问题' : '展开问题'} aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</button></header>
     <div className="question-panel-body" data-open={expanded || undefined} {...(!expanded ? { inert: '' } : {})}><div><div className="question-panel-scroll">
       <section className="approval-card"><div className="question-fields"><fieldset className="choice-step" key={spec.id} ref={field} disabled={busy || step.closing} data-exiting={step.closing || undefined}><legend className="choice-question">{spec.question}</legend><div className="answer-options">{spec.options.map((option, optionIndex) => spec.multiple ? <div className="answer-choice multiple-choice" key={option.label}><Checkbox checked={chosen(option.label)} disabled={review || busy} label={option.label} onChange={checked => setSelected(previous => ({ ...previous, [spec.id]: checked ? [...previous[spec.id] || [], option.label] : (previous[spec.id] || []).filter(row => row !== option.label) }))} />{option.description && <small>{option.description}</small>}</div> : <label className={`answer-choice ${chosen(option.label) && !custom[spec.id] ? 'selected' : ''}`} key={option.label}><input type="radio" aria-label={option.label} name={`choice:${panel.key}:${spec.id}`} disabled={review || busy} checked={chosen(option.label) && !custom[spec.id]} onChange={() => { setCustom(previous => ({ ...previous, [spec.id]: false })); setSelected(previous => ({ ...previous, [spec.id]: [option.label] })) }} /><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span><kbd>{optionIndex + 1}</kbd></label>)}</div>
       {!review && spec.options.length > 0 && <button type="button" className="custom-answer-toggle" onClick={() => setCustom(previous => ({ ...previous, [spec.id]: !previous[spec.id] }))}>{custom[spec.id] ? '返回选项' : '自定义回答'}</button>}{!review && (custom[spec.id] || !spec.options.length) && <input autoFocus aria-label="自定义回答" placeholder="输入你的回答…" value={texts[spec.id] || ''} onChange={event => setTexts(previous => ({ ...previous, [spec.id]: event.target.value }))} />}

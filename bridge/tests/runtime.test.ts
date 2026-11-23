@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { createServer } from 'node:http'
 import { WebSocketServer, type WebSocket } from 'ws'
@@ -11,7 +12,8 @@ import { GenuiStore } from '../server/genui.ts'
 import { applyThreadPatch } from '../client/thread-state.ts'
 import type { ThreadView, StreamEvent } from '../shared/types.ts'
 
-async function temporary() { await mkdir(resolve('test-results'), { recursive: true }); return mkdtemp(resolve('test-results/runtime-')) }
+// Keep Unix-domain socket paths short even when the checkout is deeply nested.
+function temporary() { return mkdtemp(resolve(tmpdir(), 'cweb-runtime-')) }
 
 test('shared native engine distinguishes active work from an idle loaded session and closes only the web connection', async () => {
  const root = await temporary(); const socket = resolve(root, 's.sock'); let active = true

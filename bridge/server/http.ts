@@ -135,7 +135,11 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
       const team = await bridge.teamForWorkspace(workspaceId)
       if (path === '/api/team' && req.method === 'GET') {
         const state = await team.snapshot()
-        json(res, { ...state, capabilities: { memberRemoval: true, batchDelivery: true, batchApproval: true }, workspaceId: workspaceId || bridge.catalog.list()[0]?.id, pilot: Boolean(bridge.team), running: state.members.filter(member => bridge.threads.get(member.threadId)?.turnId).map(member => member.threadId) }); return
+        json(res, { ...state, capabilities: { memberRemoval: true, batchDelivery: true, batchApproval: true, forwarding: true, completionNotices: true }, workspaceId: workspaceId || bridge.catalog.list()[0]?.id, pilot: Boolean(bridge.team), running: state.members.filter(member => bridge.threads.get(member.threadId)?.turnId).map(member => member.threadId) }); return
+      }
+      if (path === '/api/team/completions/read' && req.method === 'POST') {
+        const { id } = z.object({ id: z.string().uuid() }).strict().parse(await body(req))
+        json(res, await team.readCompletion(id)); return
       }
       if (path === '/api/team/candidates' && req.method === 'GET') { json(res, await bridge.teamCandidates(workspaceId || bridge.catalog.list()[0]!.id)); return }
       if (path === '/api/team/members/import' && req.method === 'POST') { json(res, await bridge.importTeamMember(workspaceId || bridge.catalog.list()[0]!.id, await body(req))); return }
@@ -143,16 +147,19 @@ export function createHttpServer({ bridge, dist, devMiddleware, control, openFil
       if (path === '/api/team/queue/batch' && req.method === 'POST') { json(res, await team.requestBatch(await body(req))); return }
       if (path === '/api/team/tasks/approve' && req.method === 'POST') { json(res, await team.approveTasks(await body(req))); return }
       if (path === '/api/team/topology' && req.method === 'POST') { json(res, await team.topology(await body(req))); return }
+      if (path === '/api/team/delegation' && req.method === 'POST') { json(res, await team.setDelegationPreference(await body(req))); return }
+      if (path === '/api/team/peer-mode' && req.method === 'POST') { json(res, await team.setPeerMode(await body(req))); return }
       if (path === '/api/team/policy' && req.method === 'POST') { json(res, await team.setPolicy(await body(req))); return }
       if (path === '/api/team/members' && req.method === 'POST') { json(res, await team.requestMember('user', await body(req))); return }
       const memberRequest = /^\/api\/team\/members\/([^/]+)\/decision$/.exec(path)
       if (memberRequest && req.method === 'POST') { json(res, await team.decideMember(z.string().uuid().parse(memberRequest[1]), await body(req))); return }
       if (path === '/api/team/enabled' && req.method === 'POST') { const input = z.object({ enabled: z.boolean() }).strict().parse(await body(req)); json(res, await team.enable(input.enabled)); return }
       if (path === '/api/team/start' && req.method === 'POST') { const input = z.object({ clientMessageId: z.string().uuid() }).strict().parse(await body(req)); json(res, await bridge.startTeamPilot(input.clientMessageId)); return }
-      const request = /^\/api\/team\/messages\/([^/]+)\/(decision|reconcile)$/.exec(path)
+      const request = /^\/api\/team\/messages\/([^/]+)\/(decision|reconcile|forward)$/.exec(path)
       if (request && req.method === 'POST') {
         const id = z.string().uuid().parse(request[1])
-        if (request[2] === 'decision') json(res, await team.decide(id, teamDecisionSchema.parse(await body(req))))
+        if (request[2] === 'forward') json(res, await team.forward(id, await body(req)))
+        else if (request[2] === 'decision') json(res, await team.decide(id, teamDecisionSchema.parse(await body(req))))
         else { z.object({}).strict().parse(await body(req)); json(res, await team.reconcile(id)) }
         return
       }

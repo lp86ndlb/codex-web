@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/releases/v0.5.0.md">0.5 Signal 更新说明</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#团队分工">团队分工</a> ·
   <a href="#待办与验收">待办与验收</a> ·

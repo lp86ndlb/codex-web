@@ -145,3 +145,29 @@ test('known preflight busy can be retried without treating an unknown outcome as
   const task = await propose(); await team.decide(task.id, { version: 1, decision: 'approve' }); await team.flush(); await team.flush()
   assert.equal(attempt, 2); assert.equal((await team.snapshot()).messages[0].state, 'delivered')
 })
+
+
+test('only the responsible session can publish a verified task notice; reading and retries survive reload', async t => {
+  const { team, propose, sent, reopen } = await fixture(t, { recentUserTasks: id => id === 'worker' ? [{ id: 'personal', title: '直接委托' }] : [] })
+  const name = 'team_report_completion'
+  const task = await propose()
+  const report = { taskId: task.id, title: '交接工具已验收', summary: '三项交付均已验证。' }
+  await assert.rejects(team.tool('manager', name, report), { code: 'TEAM_COMPLETION_OWNER' })
+  await team.decide(task.id, { version: 1, decision: 'approve' }); await team.flush()
+  await assert.rejects(team.tool('lead', name, report), { code: 'TEAM_COMPLETION_OWNER' })
+  const result = await team.propose('manager', { to: 'lead', kind: 'result', title: '验证结果', body: '测试通过', requestKey: 'result', replyTo: task.id })
+  await team.decide(result.id, { version: 1, decision: 'approve' }); await team.flush()
+  assert.equal((await team.snapshot()).completions?.length ?? 0, 0)
+  const [a, b] = await Promise.all([team.tool('lead', name, report), team.tool('lead', name, report)])
+  assert.equal(a, b)
+  await assert.rejects(team.tool('manager', name, report), { code: 'TEAM_COMPLETION_OWNER' })
+  await team.tool('worker', name, { ...report, taskId: 'personal' })
+  assert.equal(sent.length, 2)
+  const id = JSON.parse(a).id
+  await team.readCompletion(id)
+  await team.close()
+  const reports = (await reopen().snapshot()).completions!
+  assert.deepEqual(reports.map(row => row.threadId), ['lead', 'worker'])
+  assert.ok(reports[0].readAt)
+  assert.equal(reports[1].readAt, undefined)
+})

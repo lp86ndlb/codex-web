@@ -28,3 +28,7 @@
 .team-review-markdown .markdown a.local-file-link { max-width: 100%; margin: 2px 0; padding: 2px 6px; font-size: .94em; }
 .team-review-markdown .markdown img { max-height: 240px; border-radius: 7px; margin: .6em 0; }
 .team-review-markdown .markdown hr { margin: 1em 0; border: 0; border-top: 1px solid var(--line); }
+
+.team-forward { display: grid; gap: 8px; margin-block: 8px; }
+.team-forward label { display: grid; gap: 4px; color: var(--ink-secondary); }
+.team-forward select { min-width: 0; max-width: 100%; background: var(--surface); color: var(--ink); }

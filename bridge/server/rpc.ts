@@ -1,3 +1,4 @@
+import packageInfo from '../package.json' with { type: 'json' }
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { StringDecoder } from 'node:string_decoder'
@@ -121,7 +122,7 @@ export class CodexRpc extends EventEmitter {
     })
     try {
       const initialized = record(await this.call('initialize', {
-        clientInfo: { name: 'cweb_local', title: 'cweb', version: '0.4.0' },
+        clientInfo: { name: 'cweb_local', title: 'cweb', version: packageInfo.version },
         capabilities: { experimentalApi: true },
       }))
       this.status.userAgent = string(initialized.userAgent) || undefined
@@ -152,7 +153,7 @@ export class CodexRpc extends EventEmitter {
     socket.on('error', () => fail(new BridgeError('CLI_CONNECT', '无法连接本地 Codex 服务，请检查连接状态', 503)))
     try {
       await new Promise<void>((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject) })
-      const initialized = record(await this.call('initialize', { clientInfo: { name: 'cweb_local', title: 'cweb', version: '0.4.0' }, capabilities: { experimentalApi: true } }))
+      const initialized = record(await this.call('initialize', { clientInfo: { name: 'cweb_local', title: 'cweb', version: packageInfo.version }, capabilities: { experimentalApi: true } }))
       this.status.userAgent = string(initialized.userAgent) || undefined
       this.write({ method: 'initialized', params: {} }); this.setStatus('ready')
     } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); throw error }

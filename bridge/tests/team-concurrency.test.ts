@@ -43,6 +43,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   const state = await team.snapshot()
   state.edges.push({ id: 'peer', source: 'worker-1', target: 'worker-2', direction: 'both' })
   await team.topology(topology(state))
+  await team.setPeerMode({ peerMode: 'supervised' })
   await team.enable(true)
   let sequence = 0
   const propose = (to: string, from = 'lead') => team.propose(from, { to, kind: 'task', title: '隔离并发测试', body: '只验证投递，不执行项目任务', requestKey: `request-${++sequence}` })
@@ -144,7 +145,7 @@ test('one approval releases only the selected current versions and allows parall
 test('one reviewer turn gives independent verdicts, and approved work starts before the reviewer finishes', async t => {
   const f = await fixture(t), reviewing = f.gate()
   await f.team.setPolicy({ policy: 'ai' })
-  const a = await f.propose('manager-1'), b = await f.propose('manager-2'), denied = await f.propose('manager-3')
+  const a = await f.propose('worker-1', 'manager-1'), b = await f.propose('worker-2', 'manager-2'), denied = await f.propose('worker-1', 'manager-1')
   let envelope: string | undefined
   f.hooks.send = async (_row, text, purpose) => { if (purpose === 'review') { envelope = text; await reviewing.promise } }
   await f.start()
@@ -165,7 +166,7 @@ test('one reviewer turn gives independent verdicts, and approved work starts bef
 test('an unknown review batch is reconciled once using its native receipt', async t => {
   const f = await fixture(t)
   await f.team.setPolicy({ policy: 'ai' })
-  const a = await f.propose('manager-1'), b = await f.propose('manager-2')
+  const a = await f.propose('worker-1', 'manager-1'), b = await f.propose('worker-2', 'manager-2')
   await f.start()
   f.hooks.send = async () => { throw new Error('Lost review acknowledgement') }
   await f.team.flush()

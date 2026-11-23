@@ -14,7 +14,10 @@ export function threadActivity(threads: ThreadSummary[], views: Record<string, A
     const summaryAttention = summary?.attention && (!view || summary.updatedAt >= view.updatedAt)
     const choice = view?.choicePending ? `choice:${view.choiceId || pendingChoiceMessage(view.items || [])?.id || ''}` : ''
     const attentionKey = pending.get(id)?.sort().join(';') || choice || (summaryAttention ? 'summary' : '')
-    return [id, { id, title: view?.title || summary?.title || '会话', cwd: view?.cwd || summary?.cwd || '', status: threadStatus(summary, view), attention: Boolean(attentionKey), attentionKey, updatedAt: Math.max(view?.updatedAt || 0, summary?.updatedAt || 0), turn: view?.turnId || view?.runs?.at(-1)?.id || '', loaded: Boolean(view) }]
+    const viewTurn = view?.turnId || view?.runs?.at(-1)?.id
+    const turn = summary?.lastTurnId && (!view || summary.updatedAt > (view.statusUpdatedAt ?? view.updatedAt))
+      ? summary.lastTurnId : viewTurn || summary?.lastTurnId || ''
+    return [id, { id, title: view?.title || summary?.title || '会话', cwd: view?.cwd || summary?.cwd || '', status: threadStatus(summary, view), attention: Boolean(attentionKey), attentionKey, updatedAt: Math.max(view?.updatedAt || 0, summary?.updatedAt || 0), turn, loaded: Boolean(view) }]
   }))
 }
 export function newThreadNotices(previous: Map<string, ThreadActivity>, current: Map<string, ThreadActivity>): ThreadNotice[] {

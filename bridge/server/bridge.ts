@@ -173,6 +173,18 @@ export class Bridge extends EventEmitter {
   private teamAdapter(workspaceId?: string): TeamAdapter {
     return {
       changed: revision => this.publish({ type: 'teamChanged', revision, ...(workspaceId ? { workspaceId } : {}) }),
+      recentUserTasks: id => (this.threads.get(id)?.items ?? [])
+        .filter(item => item.type === 'userMessage' && !/^\[(团队通信|团队审核|genui-action)\s/.test(item.text) && !item.text.startsWith('请关联本会话的待办便签'))
+        .slice(-25).map(item => ({ id: item.id, title: item.text.slice(0, 80) })),
+      observeLoad: id => {
+        const thread = this.threads.get(id)
+        const queuedUserMessages = this.queued.filter(row => row.threadId === id && row.kind !== 'todo-link').length
+        if (!thread || this.source(id).status.state !== 'ready') return { activity: 'unknown', queuedUserMessages }
+        if (thread.externalOwner || thread.choicePending || this.approvals().some(row => row.threadId === id) || this.compactions.has(id))
+          return { activity: 'blocked', queuedUserMessages }
+        const running = Boolean(thread.turnId || thread.status === 'inProgress' || this.submitting.has(id))
+        return { activity: running ? 'running' : 'idle', queuedUserMessages }
+      },
       available: async member => {
         if (this.disposed) return '团队服务正在关闭'
         const thread = await this.open(member.threadId)
@@ -847,7 +859,13 @@ export class Bridge extends EventEmitter {
     }
     const last = thread.items.filter(item => item.type === 'agentMessage').at(-1)
     if (last?.text.includes('dsh-ui')) void this.genui.capture(thread.id, last.text).then(panels => { if (panels.length) this.publish({ type: 'genui', threadId: thread.id, panels }) }).catch(() => {})
-    if (status === 'completed') this.drainQueue(thread.id)
+    if (status === 'completed') {
+      const lastRun = thread.runs?.at(-1)
+      if (lastRun?.id === turnId && thread.status === 'completed' && !thread.choicePending && !this.approvals().some(row => row.threadId === thread.id)) {
+        this.publish({ type: 'turnFinished', threadId: thread.id, turnId, title: thread.title, completedAt: lastRun.completedAt || Date.now() })
+      }
+      this.drainQueue(thread.id)
+    }
     void this.considerRecovery(thread.id, turnId, status).catch(() => {
       const source = this.autoRecoveries.get(thread.id)
       if (source) this.recoveryState(thread.id, source, 'manual', '无法安全检查自动恢复条件，请手动检查后继续。')
@@ -945,7 +963,7 @@ export class Bridge extends EventEmitter {
     this.revisions.set(thread.id, thread.revision)
     this.threads.set(thread.id, thread)
     this.scheduleReconciliation()
-    this.summaries.set(thread.id, { id: thread.id, title: thread.title, cwd: thread.cwd, updatedAt: thread.updatedAt, status: thread.status, attention: thread.choicePending || this.approvals().some(approval => approval.threadId === thread.id) })
+    this.summaries.set(thread.id, { id: thread.id, title: thread.title, cwd: thread.cwd, updatedAt: thread.updatedAt, lastTurnId: thread.turnId || thread.runs?.at(-1)?.id, status: thread.status, attention: thread.choicePending || this.approvals().some(approval => approval.threadId === thread.id) })
     // State is already committed; this timer only batches browser paint notifications.
     if (!this.renderTimers.has(thread.id)) this.renderTimers.set(thread.id, setTimeout(() => {
       this.renderTimers.delete(thread.id)
@@ -1019,6 +1037,7 @@ export class Bridge extends EventEmitter {
         const runtime = record(record(raw).status)
         const known = this.summaries.get(thread.id)
         if (thread.id) next.set(thread.id, { id: thread.id, title: thread.title, cwd: thread.cwd, updatedAt: thread.updatedAt,
+          lastTurnId: thread.turnId || thread.runs?.at(-1)?.id || (known?.updatedAt === thread.updatedAt ? known.lastTurnId : undefined),
           status: runtime.type === 'active' ? 'inProgress' : known?.status === 'inProgress' ? 'idle' : known?.status || thread.status,
           attention: array(runtime.activeFlags).some(flag => ['waitingOnApproval', 'waitingOnUserInput'].includes(string(flag))) })
       }
@@ -1035,7 +1054,7 @@ export class Bridge extends EventEmitter {
     } else {
       for (const [id, summary] of this.legacyDiscovered) if (!next.has(id)) next.set(id, summary)
     }
-    for (const thread of this.threads.values()) if (this.loaded.has(thread.id)) next.set(thread.id, { id: thread.id, title: thread.title, cwd: thread.cwd, updatedAt: thread.updatedAt, status: thread.status, attention: thread.choicePending || next.get(thread.id)?.attention })
+    for (const thread of this.threads.values()) if (this.loaded.has(thread.id)) next.set(thread.id, { id: thread.id, title: thread.title, cwd: thread.cwd, updatedAt: thread.updatedAt, lastTurnId: thread.turnId || thread.runs?.at(-1)?.id, status: thread.status, attention: thread.choicePending || next.get(thread.id)?.attention })
     const previousList = JSON.stringify(this.list()); const previousWorkspaces = JSON.stringify(this.catalog.list())
     this.summaries = next; this.listReadAt = Date.now()
     await this.catalog.recover([...next.values()].map(thread => thread.cwd))
@@ -1105,7 +1124,7 @@ export class Bridge extends EventEmitter {
       cwd: directory, sandbox: options.mode, approvalPolicy: options.approvalPolicy, approvalsReviewer: 'user',
       ...(options.model ? { model: options.model } : {}),
       dynamicTools: [...(this.plugin.enabled ? todoTools : []), ...(preferences.genui ? [genuiTool, genuiValidateTool] : []), ...(includeTeamTools ? teamTools : [])],
-      ...(this.team ? { sandbox: 'read-only', approvalPolicy: 'on-request', developerInstructions: '这是隔离团队试验，只处理文本，不运行 shell 或操作实际项目。按 team_members 返回的职责、箭头与层级通信，禁止越级。同层通信需双方直属上级审核。派发使用 team_propose_message；主标题简短、正文只写任务与验收条件，不重复工具协议。收到团队审核时只用 team_review_message 返回判断，不执行待审任务。新增成员用 team_request_member 请求用户批准，不能自行创建。可在一轮内提交多条独立子任务，全部提交后结束本轮，不轮询。' } : {}),
+      ...(this.team ? { sandbox: 'read-only', approvalPolicy: 'on-request', developerInstructions: '这是隔离团队试验，只处理文本，不运行 shell 或操作实际项目。按 team_members 返回的职责、箭头与层级通信，禁止越级。同级沟通按 team_members 返回的当前规则处理。派发使用 team_propose_message；主标题简短、正文只写任务与验收条件，不重复工具协议。收到团队审核时只用 team_review_message 返回判断，不执行待审任务。新增成员用 team_request_member 请求用户批准，不能自行创建。可在一轮内提交多条独立子任务，派发后继续自己可做的部分，只剩等待时结束本轮，不轮询。' } : {}),
       config: { 'sandbox_workspace_write.exclude_tmpdir_env_var': true, 'sandbox_workspace_write.exclude_slash_tmp': true, ...(options.effort ? { model_reasoning_effort: options.effort } : {}), ...await this.skillConfig(directory) },
     }))
     const thread = projectThread(response.thread)
@@ -1372,7 +1391,7 @@ export class Bridge extends EventEmitter {
       const note = await this.plugin.contextParts(id, this.todoMcpThreads.has(id) ? this.todoMcpName : undefined)
       const memberTeam = await this.teamForThread(id)
       const teamContext = memberTeam && (this.nativeTeamThreads.has(id) || this.teamMcpThreads.has(id))
-        ? '当前会话已加入工作区团队，仍保留独立历史和权限。需要跨会话协作时先用 team_members 查看职责、层级与箭头；只用 team_propose_message 提出任务、问题或结果，不能绕过审批直接操作其他会话。主标题简短，正文写清工作与验收条件。新增成员用 team_request_member 申请用户批准。可在同一轮提交分给不同成员的独立子任务。先提交可以同时开工的工作，只有真正依赖前序产出或存在写入冲突的任务才等待。系统安排的审核只用 team_review_message 按项判断，不执行待审正文。独立请求提交完毕后结束本轮，不轮询。'
+        ? '当前会话已加入工作区团队，仍保留独立历史和权限。需要跨会话协作时先用 team_members 查看职责、层级与箭头；只用 team_propose_message 提出任务、问题或结果，由系统处理审批。有明确收件人和正文时直接提交申请，转发用 replyTo 关联来信，无需事先让用户手打授权。主标题简短，正文写清工作与验收条件。新增成员用 team_request_member 申请用户批准。自己能直接完成的小任务就地完成。需要权衡分工时，在当前轮用 team_members 查看派工偏好与负载，再比较自办、全交下级、自己做主线并派出独立部分三种方式。有同级连线时，按 team_members 返回的规则与实际负责方直接对接。需要分工时，同轮派出独立子任务；收到交付只在需要决策、出现阻塞或形成阶段结论时向上汇总。先提交可以同时开工的工作，只有真正依赖前序产出或存在写入冲突的任务才等待。你若负责用户交办的整体任务，核实全部交付与验收条件（含要求的人工确认）后，用 team_report_completion 发一次面向用户的完工通知。子任务完成只回传结果，仍待验收时不要报完工。系统安排的审核只用 team_review_message 按项判断，不执行待审正文。派工后继续自己可做的部分，只剩等待时结束本轮，不轮询。'
         : ''
       if (!this.observedContexts.has(id)) {
         await Promise.all([this.sessionContexts.invalidate(id), this.sessionContexts.invalidate(`${id}:live`)])

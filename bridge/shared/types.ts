@@ -50,6 +50,7 @@ export interface ContextUsage { inputTokens: number; windowTokens: number; updat
 
 export interface Item {
   id: string
+  clientId?: string
   type: string
   text: string
   status: string
@@ -136,6 +137,7 @@ export type ActivityView = Pick<ThreadView, 'id' | 'revision' | 'title' | 'cwd' 
 }
 
 export interface ThreadSummary {
+  lastTurnId?: string
   id: string
   title: string
   cwd: string
@@ -178,6 +180,7 @@ export interface Bootstrap {
 }
 
 export type StreamEvent =
+  | { type: 'turnFinished'; threadId: string; turnId: string; title: string; completedAt: number }
   | { type: 'teamChanged'; revision: number; workspaceId?: string }
   | ThreadPatch
   | { type: 'goal'; threadId: string; goal: ThreadGoal | null }

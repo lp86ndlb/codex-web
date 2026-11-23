@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, message } from './api.ts'
-import { teamOutstanding, type TeamView, type TeamSnapshot } from '../shared/team.ts'
+import { teamOutstanding, type TeamView, type TeamCompletionNotice, type TeamSnapshot } from '../shared/team.ts'
 
-interface WorkspaceTeamSummary { id: string; enabled: boolean; members: number; pending: number }
+interface WorkspaceTeamSummary { unread?: TeamCompletionNotice[]; id: string; enabled: boolean; members: number; pending: number }
 export function teamPath(path: string, workspaceId?: string) { return workspaceId ? `${path}${path.includes('?') ? '&' : '?'}workspace=${encodeURIComponent(workspaceId)}` : path }
 
 export function useTeam(enabled: boolean, workspaceId?: string, pilot = false) {

@@ -2,7 +2,7 @@ import { memo, useEffect, useId, useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp, ListOrdered, ShieldCheck } from 'lucide-react'
 import type { TeamView } from '../shared/team.ts'
 import { buildTeamQueue } from '../shared/team-queue.ts'
-import { automaticTeamBatchSize, nextTeamBatch } from '../shared/team-batch.ts'
+import { shouldAutoBatchTeamMessages, nextTeamBatch } from '../shared/team-batch.ts'
 import './team-queue.css'
 
 export const TeamQueue = memo(function TeamQueue({ team, threadId, manualQueueCount = 0, onReview, onCombine, saving }: {
@@ -20,7 +20,7 @@ export const TeamQueue = memo(function TeamQueue({ team, threadId, manualQueueCo
     : counts.receipt > 0 ? '核对回执后继续投递。'
     : manualQueueCount > 0 ? `当前有 ${manualQueueCount} 条手动排队消息，将优先投递。`
     : requested ? `空闲后合并前 ${nextBatch.length} 条已批准通信。`
-    : nextBatch.length >= automaticTeamBatchSize ? `空闲后自动合并前 ${nextBatch.length} 条已批准通信。`
+    : shouldAutoBatchTeamMessages(nextBatch) ? `空闲后自动合并前 ${nextBatch.length} 条已批准通信。`
     : '当前轮结束后，已批准项按顺序自动投递。'
   const summary = [counts.queued && `排队 ${counts.queued}`, counts.approval && `待你审批 ${counts.approval}`, counts.review && `待审核 ${counts.review}`, counts.sending && `投递中 ${counts.sending}`, counts.receipt && `核对回执 ${counts.receipt}`, counts.attention && `需处理 ${counts.attention}`].filter(Boolean).join(' · ')
   return <section className="team-queue" aria-label="当前会话的团队队列" data-paused={paused || undefined}>

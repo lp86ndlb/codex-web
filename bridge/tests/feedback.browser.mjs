@@ -105,7 +105,9 @@ try {
   await page.getByRole('button', { name: '快捷命令', exact: true }).click(); await closing('.command-palette', () => page.keyboard.press('Escape'))
   await page.getByRole('button', { name: '连接与设置', exact: true }).click(); await closing('.settings-dialog[open]', () => page.getByRole('button', { name: '关闭对话框', exact: true }).click())
   await page.getByRole('button', { name: '显示工作区面板', exact: true }).click(); await closing('.inspector', () => page.getByRole('button', { name: '关闭工作区面板', exact: true }).click())
-  await page.getByRole('button', { name: 'GenUI 交互面板', exact: true }).click(); await closing('.genui-panel', () => page.getByRole('button', { name: '关闭交互面板', exact: true }).click())
+  await page.getByRole('button', { name: '快捷命令', exact: true }).click()
+  await page.getByRole('option', { name: /GenUI 交互面板/ }).click()
+  await closing('.genui-panel', () => page.getByRole('button', { name: '关闭交互面板', exact: true }).click())
 
   await input.fill('选择框测试'); await input.press('Enter'); await question.waitFor()
   await question.getByRole('radio', { name: '先修复', exact: true }).check(); await question.getByRole('button', { name: '提交回答', exact: true }).click(); await question.waitFor({ state: 'hidden' })

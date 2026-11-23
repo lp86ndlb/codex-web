@@ -8,6 +8,7 @@ import { message } from './api.ts'
 
 const PAGE_SIZE = 60
 const PAGE_STEP = 30
+const AUTO_HISTORY_PAGE_LIMIT = 8
 interface Row { id: string; items: Item[]; process: boolean; first: number; last: number }
 interface HistoryPage { endId: string; liveAfter: number }
 interface ReadingAnchor { id: string; top: number }
@@ -27,7 +28,7 @@ function transcriptRows(items: Item[]): Row[] {
 
 /** Keep keystrokes outside the Markdown tree; hydrate older messages on demand. */
 export interface MessageJump { id: string; seq: number }
-export const Transcript = memo(function Transcript({ thread, loading, approvals, expanded = false, collapseTiming = 'next-input', jumpTo, follow, paused, onEdit, onFork, onLoadOlder, editDisabled = false }: { thread?: ThreadView; loading: boolean; approvals: number; expanded?: boolean; collapseTiming?: ActivityCollapseTiming; jumpTo?: MessageJump | null; follow: MutableRefObject<boolean>; paused: boolean; onEdit?: (item: Item) => void; onFork?: (item: Item) => void; onLoadOlder?: (id: string, cursor: string) => Promise<void>; editDisabled?: boolean }) {
+export const Transcript = memo(function Transcript({ thread, loading, approvals, filterEmpty, expanded = false, collapseTiming = 'next-input', jumpTo, follow, paused, onEdit, onFork, onLoadOlder, editDisabled = false }: { filterEmpty?: string; thread?: ThreadView; loading: boolean; approvals: number; expanded?: boolean; collapseTiming?: ActivityCollapseTiming; jumpTo?: MessageJump | null; follow: MutableRefObject<boolean>; paused: boolean; onEdit?: (item: Item) => void; onFork?: (item: Item) => void; onLoadOlder?: (id: string, cursor: string) => Promise<void>; editDisabled?: boolean }) {
   const [page, setPage] = useState<HistoryPage | null>(null)
   const [manualOpen, setManualOpen] = useState<Record<string, boolean>>({})
   const container = useRef<HTMLDivElement>(null); const handled = useRef(-1)
@@ -70,21 +71,54 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
     const target = [...root.querySelectorAll<HTMLElement>('[data-message-id], .activity-group[data-activity-id]')].find(node => node.getBoundingClientRect().bottom > top + 1)
     if (target) anchor.current = { id: target.dataset.messageId || target.dataset.activityId!, top: target.getBoundingClientRect().top - top }
   }, [])
+  const autoHistory = useRef({ pages: 0, lastCursor: '' })
+  const loadRemotePage = useCallback((manual: boolean) => {
+    if (paging.current || !thread?.history?.hasOlder || !thread.history.cursor || !onLoadOlder) return
+    paging.current = true
+    if (manual) { follow.current = false; autoHistory.current.pages = 0 }
+    if (!follow.current) remember()
+    autoHistory.current.lastCursor = thread.history.cursor
+    setRemoteLoading(true); setHistoryError('')
+    void onLoadOlder(thread.id, thread.history.cursor).catch(error => {
+      anchor.current = null
+      if (alive.current) setHistoryError(message(error))
+    }).finally(() => { if (alive.current) { setRemoteLoading(false); paging.current = false } })
+  }, [thread?.id, thread?.history?.hasOlder, thread?.history?.cursor, onLoadOlder, follow, remember])
+  const empty = !items.length
+  const cursor = thread?.history?.cursor
+  useEffect(() => {
+    if (!remoteOlder || !filterEmpty || start || remoteLoading || historyError || !cursor) return
+    const root = container.current
+    const viewport = root?.closest<HTMLElement>('.conversation')
+    if (!root || !viewport) return
+    let timer: ReturnType<typeof setTimeout>
+    function schedule() {
+      clearTimeout(timer)
+      if (document.hidden) return
+      timer = setTimeout(() => {
+        if (document.hidden || paging.current || autoHistory.current.lastCursor === cursor || autoHistory.current.pages >= AUTO_HISTORY_PAGE_LIMIT) return
+        const bounds = viewport!.getBoundingClientRect()
+        const dock = viewport!.parentElement?.querySelector('.composer-dock')?.getBoundingClientRect()
+        const transcript = root!.getBoundingClientRect()
+        // Underfilled filtered histories have no scroll gesture to trigger the next page.
+        if (!bounds.height || (!empty && (transcript.top < bounds.top - 1 || transcript.bottom + 16 > Math.min(bounds.bottom, dock?.top ?? bounds.bottom)))) return
+        autoHistory.current.pages++
+        loadRemotePage(false)
+      }, 150)
+    }
+    const observer = new ResizeObserver(schedule)
+    observer.observe(root); observer.observe(viewport)
+    document.addEventListener('visibilitychange', schedule)
+    schedule()
+    return () => { clearTimeout(timer); observer.disconnect(); document.removeEventListener('visibilitychange', schedule) }
+  }, [filterEmpty, empty, remoteOlder, start, cursor, remoteLoading, historyError, loadRemotePage])
   const earlier = useCallback(() => {
     if (paging.current) return
-    if (!start) {
-      if (!thread?.history?.hasOlder || !thread.history.cursor || !onLoadOlder) return
-      paging.current = true; follow.current = false; remember(); setRemoteLoading(true); setHistoryError('')
-      void onLoadOlder(thread.id, thread.history.cursor).catch(error => {
-        anchor.current = null
-        if (alive.current) setHistoryError(message(error))
-      }).finally(() => { if (alive.current) { setRemoteLoading(false); paging.current = false } })
-      return
-    }
+    if (!start) { loadRemotePage(true); return }
     paging.current = true; follow.current = false; remember()
     const nextEnd = Math.max(1, end - PAGE_STEP)
     setPage({ endId: rows[nextEnd - 1].id, liveAfter: page?.liveAfter ?? items.length })
-  }, [start, end, rows, page, items.length, remember, follow, thread?.id, thread?.history?.cursor, thread?.history?.hasOlder, onLoadOlder])
+  }, [start, end, rows, page, items.length, remember, follow, loadRemotePage])
   const newer = () => {
     follow.current = false; remember()
     const nextEnd = Math.min(rows.length, end + PAGE_STEP)
@@ -151,7 +185,7 @@ export const Transcript = memo(function Transcript({ thread, loading, approvals,
     {items.length ? rendered.map(row => {
       const item = row.items[0]; const last = row.items.at(-1)!; const run = runEnds.get(last.id)
       return <Fragment key={row.id}>{row.id === rows[tailStart]?.id && gap}{row.process ? <ActivityGroup items={row.items} expanded={isOpen(row)} onToggle={() => toggle(row)} /> : <TranscriptItem item={item} autoRecovery={Boolean(item.turnId && recoveryTurns.has(item.turnId))} onEdit={item.type === 'userMessage' && item.status !== 'sending' ? onEdit : undefined} onFork={item.type === 'userMessage' && item.status !== 'sending' ? onFork : undefined} editDisabled={editDisabled} />}{run && <RunSummary run={run} latest={(!page || arrival >= 0) && run.id === thread?.runs?.at(-1)?.id} />}</Fragment>
-    }) : <div className="thread-empty"><Sparkles size={22} /><p>会话已准备好，写下你想完成的事。</p></div>}
+    }) : <div className="thread-empty"><Sparkles size={22} /><p>{filterEmpty || '会话已准备好，写下你想完成的事。'}</p></div>}
     {tailStart === rows.length && gap}{(!page || arrival >= 0) && <>{thread?.error && <Notice text={thread.error} />}
     {thread?.status === 'interrupted' && <div className="turn-end">任务已停止 · 可以继续发送消息</div>}
     {thread?.status === 'completed' && !thread.runs?.length && <div className="turn-end"><Check size={12} />本轮已完成{thread.tokens > 0 && ` · ${thread.tokens.toLocaleString()} tokens`}</div>}</>}

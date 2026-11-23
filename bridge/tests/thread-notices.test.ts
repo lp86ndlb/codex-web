@@ -43,3 +43,13 @@ test('follow-up progress keeps the same question identity; only another question
   const next=threadActivity([], {t:{...view as object,items:[question,{...question,id:'q2'}]} as never}, [])
   assert.equal(newThreadNotices(progress,next)[0].kind,'waiting')
 })
+
+
+test('tabs observing a summary or a full activity update deduplicate on the same native turn', () => {
+  const summary = { id: 't', title: '任务', cwd: '/project', updatedAt: 5, status: 'completed' as const, lastTurnId: 'turn-2' }
+  const before = state({ status: 'inProgress', turn: 'turn-2' })
+  const stale = { ...summary, revision: 1, statusUpdatedAt: 3, updatedAt: 3, turnId: 'turn-1' }
+  const full = { ...summary, revision: 2, turnId: null, runs: [{ id: 'turn-2', status: 'completed' }] }
+  const keys = [{}, { t: stale }, { t: full }].map(views => newThreadNotices(before, threadActivity([summary], views as never, []))[0].key)
+  assert.deepEqual(keys, Array(3).fill('t:completed:turn-2'))
+})

@@ -31,7 +31,8 @@ export class WorkspaceTeams {
   async index() {
     return { workspaces: await Promise.all(this.catalog.list().map(async row => {
       const state = await (await this.get(row.id)).snapshot()
-      return { id: row.id, enabled: state.enabled, members: state.members.length,
+      const unread = state.completions?.filter(report => !report.readAt).map(({ id, sender, title, threadId, createdAt }) => ({ id, sender, title, threadId, createdAt }))
+      return { ...(unread?.length ? { unread } : {}), id: row.id, enabled: state.enabled, members: state.members.length,
         pending: state.messages.filter(message => teamOutstanding.has(message.state)).length + state.memberRequests.filter(request => ['pending', 'uncertain'].includes(request.state)).length }
     })) }
   }

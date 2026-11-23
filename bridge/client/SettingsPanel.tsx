@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Archive, ArrowLeft, Check, ChevronRight, Cpu, Gauge, Keyboard, LoaderCircle, Monitor, Moon, Palette, Plug, Puzzle, RefreshCw, Search, Settings2, ShieldCheck, Sun } from 'lucide-react'
+import { Archive, ArrowLeft, Check, ChevronRight, Cpu, Gauge, Keyboard, LoaderCircle, Monitor, Moon, Palette, Plug, Puzzle, RefreshCw, Search, Settings2, ShieldCheck, Sun, Users } from 'lucide-react'
 import type { Bootstrap, ModelOption, Preferences, SessionOptions, SkillInfo, ThreadSummary, ThreadView, WorkspaceInfo } from '../shared/types.ts'
 import { api, message } from './api.ts'
 import { describeEffort, describeModel } from '../shared/activity.ts'
@@ -14,11 +14,15 @@ import type { RunningStyle } from './RunningBorder.tsx'
 import { FilePreviewProvider } from './FilePreview.tsx'
 import { ConnectionPanel } from './ConnectionPanel.tsx'
 import type { RuntimeStatus } from '../shared/types.ts'
+import type { TeamDisplay } from './team-transcript.ts'
+import type { TeamController } from './useTeam.ts'
+import { delegationLabels, teamPeerRules, teamPolicyLabels } from '../shared/team.ts'
 import { workspaceFor } from './Workspaces.tsx'
 
-export type SettingsTab = 'general' | 'models' | 'skills' | 'appearance' | 'archives' | 'shortcuts' | 'connection' | 'status'
+export type SettingsTab = 'general' | 'team' | 'models' | 'skills' | 'appearance' | 'archives' | 'shortcuts' | 'connection' | 'status'
 const tabs: { id: SettingsTab; title: string; icon: ReactNode }[] = [
   { id: 'general', title: '常规', icon: <Settings2 size={17} /> }, { id: 'models', title: '模型与权限', icon: <Cpu size={17} /> },
+  { id: 'team', title: '团队协作', icon: <Users size={17} /> },
   { id: 'skills', title: 'Skills', icon: <Puzzle size={17} /> }, { id: 'appearance', title: '外观与布局', icon: <Palette size={17} /> },
   { id: 'archives', title: '归档会话', icon: <Archive size={17} /> }, { id: 'shortcuts', title: '快捷键', icon: <Keyboard size={17} /> },
   { id: 'status', title: '状态与额度', icon: <Gauge size={17} /> }, { id: 'connection', title: '连接与诊断', icon: <Plug size={17} /> },
@@ -37,9 +41,43 @@ function OptionFields({ value, models, onChange, prefix, defaults }: { value: Se
   </div>
 }
 
+function TeamSettings({ team, workspaceName, teamDisplay, onTeamDisplay }: { teamDisplay: TeamDisplay; onTeamDisplay: (value: TeamDisplay) => void; team: TeamController; workspaceName?: string }) {
+  const state = team.state
+  const [pendingEnabled, setPendingEnabled] = useState<boolean | null>(null)
+  async function toggle(enabled: boolean) {
+    setPendingEnabled(enabled)
+    try { await team.act('/team/enabled', { enabled }) }
+    finally { setPendingEnabled(null) }
+  }
+  if (!state) {
+    if (team.error) return <><Notice text={team.error} /><button className="settings-text-button" onClick={() => void team.load()}>重新读取</button></>
+    return <p className="settings-description">{!workspaceName && !team.pilot ? '选择工作区后可管理团队。' : team.scope ? '正在读取团队设置…' : '当前后台尚未启用工作区团队功能。'}</p>
+  }
+  return <>
+    <h4>{workspaceName || '当前工作区'}</h4>
+    <Switch label="团队模式" checked={pendingEnabled ?? state.enabled} disabled={team.saving || pendingEnabled !== null} onChange={enabled => void toggle(enabled)}
+      detail={state.enabled ? '已开启，成员可沿关系图中的连线通信。' : '已暂停。可先设置协作规则，开启后按队列继续投递。'} />
+    {team.error && <Notice text={team.error} />}
+    <label className="setting-field">通信审批<select aria-label="通信审批方式" value={state.policy} disabled={team.saving} onChange={e => void team.act('/team/policy', { policy: e.target.value })}>
+      {Object.entries(teamPolicyLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+    </select></label>
+    <p className="settings-footnote">{state.policy === 'manual' ? '每条新通信先由你确认。' : state.policy === 'automatic' ? '系统按已开放的连线和协作规则审批。' : '由发件会话的直属上级判断风险，最高负责人的申请由你确认。'} 新增成员仍需你批准。</p>
+    {state.peerMode && <><label className="setting-field">同级协作方式<select aria-label="同级协作方式" value={state.peerMode} disabled={team.saving} onChange={e => void team.act('/team/peer-mode', { peerMode: e.target.value })}>
+      <option value="direct">直接协商，按需上报（默认）</option><option value="supervised">先由直属上级审核（旧模式）</option>
+    </select></label><p className="settings-footnote">{teamPeerRules[state.peerMode]}{state.policy === 'ai' && state.peerMode === 'direct' && '同级通信由发送会话单独进行只读风险判断。'}</p></>}
+    {state.delegationPreference && <><label className="setting-field">任务分工偏好<select aria-label="任务分工偏好" value={state.delegationPreference} disabled={team.saving} onChange={e => void team.act('/team/delegation', { preference: e.target.value })}>
+      {Object.entries(delegationLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+    </select></label><p className="settings-footnote">会话结合队列和交接成本决定，也可以自己推进主线，把独立部分交给下级。</p></>}
+    <Switch label="显示团队消息" detail="与对话顶栏同步，在此浏览器中按工作区保存。" checked={teamDisplay === 'show'} onChange={visible => onTeamDisplay(visible ? 'show' : 'hide')} />
+    <p className="settings-footnote">规则按工作区保存，已提出的通信沿用原审批流程。</p>
+    {(!state.peerMode || !state.delegationPreference) && <p className="settings-callout">后台更新并重启后，可在这里使用{!state.peerMode ? '同级协作方式和' : ''}任务分工偏好。</p>}
+  </>
+}
+
 export function SettingsPanel(props: {
+  desktopNotifications: Pick<Parameters<typeof Switch>[0], 'checked' | 'disabled' | 'onChange' | 'detail'>
   loadingStyle: RunningStyle; onLoadingStyle: (value: RunningStyle) => void; loadingFocus?: boolean
-  runtime: RuntimeStatus; online: boolean; thread?: ThreadView
+  teamDisplay: TeamDisplay; onTeamDisplay: (value: TeamDisplay) => void; team: TeamController; runtime: RuntimeStatus; online: boolean; thread?: ThreadView
   tab: SettingsTab; onTab: (tab: SettingsTab) => void; boot: Bootstrap | null; connected: boolean
   preferences: Preferences; onPreferences: (patch: Partial<Preferences>) => Promise<void>
   current?: { title: string; options: SessionOptions; model?: string; tokens?: number }; onCurrent: (patch: Partial<SessionOptions>) => void
@@ -80,10 +118,11 @@ export function SettingsPanel(props: {
     return () => observer.disconnect()
   }, [tab])
   return <div className="settings-layout"><nav ref={navigation} className="settings-nav" aria-label="设置分类">{tabs.map(item => <button type="button" key={item.id} className={tab === item.id ? 'active' : ''} aria-current={tab === item.id ? 'page' : undefined} onClick={() => props.onTab(item.id)}>{item.icon}<span>{item.title}</span></button>)}</nav>
-    <div className="settings-page"><div className="settings-page-heading"><h3>{tabs.find(item => item.id === tab)?.title}</h3><span role="status">{tab === 'connection' ? '按需检查' : saving ? <><LoaderCircle size={13} className="spin" />保存中</> : <><Check size={13} />自动保存</>}</span></div>{error && <Notice text={error} />}
+    <div className="settings-page"><div className="settings-page-heading"><h3>{tabs.find(item => item.id === tab)?.title}</h3><span role="status">{tab === 'connection' ? '按需检查' : (saving || (tab === 'team' && props.team.saving)) ? <><LoaderCircle size={13} className="spin" />保存中</> : <><Check size={13} />自动保存</>}</span></div>{error && <Notice text={error} />}
       {tab === 'general' && <><p className="settings-description">把工作方式设为默认，接下来专注于项目本身。</p>
         <label className="setting-field">发送消息<select aria-label="发送消息快捷键" value={prefs.sendKey} onChange={event => change({ sendKey: event.target.value as Preferences['sendKey'] })}><option value="enter">Enter 发送 · Shift Enter 换行</option><option value="mod-enter">Ctrl / ⌘ Enter 发送 · Enter 换行</option></select></label>
         <Switch label="启用 GenUI" detail="按需加载交互图表、表单、函数图和会话面板" checked={prefs.genui} onChange={genui => change({ genui })} />
+        <Switch label="会话完成桌面通知" {...props.desktopNotifications} />
         <Switch label="自动恢复失败的请求" detail="确认模型请求失败且本轮尚未执行工具时，最多自动重试一次；排队任务和已执行的命令不会重发" checked={prefs.autoRecovery ?? true} onChange={autoRecovery => change({ autoRecovery })} />
         <p className="settings-footnote">只处理从网页提交的请求；原生终端会话由 CLI 自身恢复。</p>
         <label className="setting-field">图片读取方式<select aria-label="图片读取方式" value={prefs.imageInputMode || 'on-demand'} onChange={event => change({ imageInputMode: event.target.value as Preferences['imageInputMode'] })}><option value="on-demand">按需读取原图（推荐）</option><option value="inline">随消息直接发送原图</option></select></label>
@@ -97,6 +136,7 @@ export function SettingsPanel(props: {
         <p className="settings-footnote">右侧栏按待办、变更、文件排列。悬浮窗保留拖动、缩放和位置记忆；切换不会改变已保存的待办。</p>
         <div className="settings-callout">旧会话可以在空闲后连接便签工具；每次会话分别保存待办。</div>
       </>}
+      {tab === 'team' && <TeamSettings teamDisplay={props.teamDisplay} onTeamDisplay={props.onTeamDisplay} key={props.team.scope} team={props.team} workspaceName={props.workspaces.find(w => w.id === props.workspaceId)?.name} />}
       {tab === 'models' && <><h4>新会话默认设置</h4><p className="settings-description">默认模型与强度用于新会话和选择跟随默认的会话；单独指定的设置保留。</p><p className="settings-footnote">完全权限允许访问本机文件和网络，并关闭逐次审批。</p><OptionFields prefix="默认" value={prefs} models={props.boot?.models || []} onChange={change} />
         {props.current && <section className="settings-section"><h4>当前会话</h4><p className="settings-description">{props.current.title} · 更改从下一轮生效</p><OptionFields prefix="当前会话" value={props.current.options} models={props.boot?.models || []} onChange={props.onCurrent} defaults={prefs} /><button className="settings-text-button" onClick={() => props.onCurrent({ model: '', effort: '', mode: prefs.mode, approvalPolicy: prefs.approvalPolicy })}>将默认设置应用到此会话</button></section>}
       </>}

@@ -17,7 +17,8 @@ const bridge = new Bridge(rpc, new Workspace(cwd), resolve(root, 'home'), resolv
 const app = createHttpServer({ bridge, dist: resolve(process.env.CWEB_TEST_DIST || 'dist') })
 await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve))
 const browser = await chromium.launch({ executablePath: process.env.BROWSER_EXECUTABLE || '/usr/bin/microsoft-edge', headless: true, ignoreDefaultArgs: ['--headless=old'], args: ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage'] })
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 } }), errors = [], requests = []
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+const page = await context.newPage(), errors = [], requests = []
 page.on('pageerror', error => errors.push(error.message))
 page.on('request', request => { if (request.url().includes('/api/team')) requests.push({ method: request.method(), path: request.url(), body: request.postDataJSON() }) })
 const base = `http://127.0.0.1:${app.server.address().port}`
@@ -54,7 +55,19 @@ try {
   const originalHistory = (await rpc.call('thread/read', { threadId: bThreads[0].id, includeTurns: true })).thread
   const baselineCalls = (await readFile(log, 'utf8')).trim().split('\n').length
   await page.goto(base); await page.getByText('本地引擎已连接', { exact: true }).waitFor()
-  await row(aThreads[0].id).click(); await page.locator('.composer textarea').fill('保留原对话草稿')
+  await row(aThreads[0].id).click()
+  await page.locator('.composer textarea').fill('/team')
+  await page.getByRole('button', { name: /团队协作设置.*当前工作区/ }).click()
+  const policy = page.getByRole('combobox', { name: '通信审批方式' })
+  assert.equal(await page.getByRole('checkbox', { name: '团队模式', exact: true }).isChecked(), false)
+  await policy.selectOption('automatic')
+  const paused = await bridge.teamForWorkspace(a.id)
+  await until(async () => (await paused.snapshot()).policy === 'automatic')
+  assert.equal((await paused.snapshot()).enabled, false)
+  await policy.selectOption('manual')
+  await until(async () => (await paused.snapshot()).policy === 'manual')
+  await page.getByRole('button', { name: '关闭对话框' }).click()
+  await page.locator('.composer textarea').fill('保留原对话草稿')
   const switchChat = await page.locator('.team-mode-switch').boundingBox()
 
   stage = 'right-click another workspace toggles its own state'
@@ -68,6 +81,28 @@ try {
   assert.equal(await graph.getByRole('button', { name: '运行演示' }).count(), 0)
   const switchGraph = await page.locator('.team-mode-switch').boundingBox()
   assert.ok(Math.abs(switchChat.x - switchGraph.x) < 1 && Math.abs(switchChat.y - switchGraph.y) < 1, 'Mode switch stays aligned when chat actions disappear')
+
+  stage = 'peer settings persist for the selected workspace only'
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+  await page.getByRole('navigation', { name: '设置分类' }).getByRole('button', { name: '团队协作', exact: true }).click()
+  const teamToggle = page.getByRole('checkbox', { name: '团队模式', exact: true })
+  await teamToggle.uncheck()
+  await until(async () => !(await bTeam.snapshot()).enabled)
+  await teamToggle.check()
+  await until(async () => (await bTeam.snapshot()).enabled)
+  const peerMode = page.getByRole('combobox', { name: '同级协作方式' })
+  assert.equal(await peerMode.inputValue(), 'direct')
+  await peerMode.selectOption('supervised')
+  await until(async () => (await bTeam.snapshot()).peerMode === 'supervised')
+  assert.equal((await aTeam.snapshot()).peerMode, 'direct')
+  const delegation = page.getByRole('combobox', { name: '任务分工偏好' })
+  assert.equal(await delegation.inputValue(), 'balanced')
+  for (const preference of ['parallel', 'local']) {
+    await delegation.selectOption(preference)
+    await until(async () => (await bTeam.snapshot()).delegationPreference === preference)
+  }
+  assert.equal((await aTeam.snapshot()).delegationPreference, 'balanced')
+  await page.getByRole('button', { name: '关闭对话框' }).click()
 
   stage = 'existing session picker remains scoped and import retains history'
   await graph.getByRole('button', { name: '选择已有负责人' }).click()
@@ -138,6 +173,115 @@ try {
   await screenshot('workspace-team-import-mobile.png')
   await picker.getByRole('button', { name: '取消', exact: true }).click(); await picker.waitFor({ state: 'hidden' })
   await page.setViewportSize({ width: 1440, height: 900 }); await screenshot('workspace-team-large-font.png')
+
+  stage = 'the responsible conversation can notify a user reading a different workspace'
+  const owner = bThreads[0].id
+  await rpc.call('turn/start', { threadId: owner, input: [{ type: 'text', text: '验收整套交付' }] })
+  const inbox = async () => JSON.parse(await bTeam.tool(owner, 'team_inbox', {})).userTasks
+  await until(async () => (await inbox()).some(task => task.title === '验收整套交付'))
+  await rpc.call('test/finish', { threadId: owner })
+  const originalTask = (await inbox()).find(task => task.title === '验收整套交付')
+  const credential = await bTeam.toolToken(owner)
+  const openDesktopSetting = async () => {
+    await page.getByRole('button', { name: '连接与设置', exact: true }).click()
+    await page.getByRole('navigation', { name: '设置分类' }).getByRole('button', { name: '常规', exact: true }).click()
+    return page.getByRole('checkbox', { name: '会话完成桌面通知' })
+  }
+  const desktopSetting = await openDesktopSetting()
+  assert.equal(await desktopSetting.isChecked(), false)
+  // Grant permission only to this disposable browser profile. Keep the native
+  // notification constructor and observe the notifications created by each tab.
+  await page.evaluate(() => {
+    const original = window.Notification
+    window.Notification = new Proxy(original, { get(target, key) {
+      if (key === 'permission') return 'default'
+      if (key === 'requestPermission') return async () => {
+        window.cwebTestRequestedOnClick = navigator.userActivation.isActive
+        window.Notification = original
+        return 'default'
+      }
+      return Reflect.get(target, key)
+    } })
+  })
+  await desktopSetting.click()
+  await page.getByText('尚未授权，可再次点击开启。').waitFor()
+  assert.equal(await desktopSetting.isChecked(), false)
+  assert.equal(await page.evaluate(() => window.cwebTestRequestedOnClick), true)
+  await page.context().grantPermissions(['notifications'], { origin: base })
+  await desktopSetting.check()
+  await page.getByRole('button', { name: '关闭对话框' }).click()
+  const observeNotifications = () => {
+    window.cwebTestNotifications = []
+    window.Notification = new Proxy(window.Notification, { construct(target, args) {
+      const notification = Reflect.construct(target, args)
+      window.cwebTestNotifications.push(notification)
+      return notification
+    } })
+  }
+  await page.context().addInitScript(observeNotifications)
+  await page.evaluate(observeNotifications)
+  const otherTab = await page.context().newPage()
+  await otherTab.goto(base)
+  await otherTab.getByText('本地引擎已连接', { exact: true }).waitFor()
+  await bridge.teamAgentTool(credential, 'team_report_completion', { taskId: originalTask.id, title: '整套交付已验收', summary: '已核对最终交付清单。' }, b.id)
+  const completionCard = page.locator('.notice-team-completion')
+  await completionCard.getByText('整套交付已验收').waitFor()
+  const count = tab => tab.evaluate(() => window.cwebTestNotifications.length)
+  await until(async () => (await count(page)) + (await count(otherTab)) === 1)
+  const notifiedTab = (await count(page)) ? page : otherTab
+  const notification = await notifiedTab.evaluate(() => {
+    const n = window.cwebTestNotifications[0]
+    return { title: n.title, body: n.body }
+  })
+  assert.deepEqual(notification, { title: '整套交付已验收', body: '团队任务已完工 · B-负责人' })
+  const freshTab = await page.context().newPage()
+  await freshTab.goto(base)
+  await freshTab.locator('.notice-team-completion').getByText('整套交付已验收').waitFor()
+  assert.equal(await count(freshTab), 0)
+  await freshTab.close()
+  // The headless desktop has no OS tray to click. Exercise the actual click handler.
+  await notifiedTab.evaluate(() => window.cwebTestNotifications[0].dispatchEvent(new Event('click')))
+  await notifiedTab.getByRole('region', { name: '团队完工通知' }).getByText('已核对最终交付清单。').waitFor()
+  await until(async () => Boolean((await bTeam.snapshot()).completions[0].readAt))
+  stage = 'ordinary turns in a workspace without team mode each send a desktop banner'
+  await aTeam.enable(false)
+  const plain = []
+  for (const name of ['普通会话甲', '普通会话乙']) {
+    const thread = await bridge.create(cwd, 'fixture-next', 'medium')
+    await bridge.rename(thread.id, name)
+    plain.push(thread.id)
+  }
+  const namesOfBanners = tab => tab.evaluate(() => window.cwebTestNotifications.filter(n => n.body === '本轮处理完成').map(n => n.title))
+  const allBanners = async () => (await Promise.all([page, otherTab].map(namesOfBanners))).flat()
+  await Promise.all(plain.map(threadId => rpc.call('turn/start', { threadId, input: [{ type: 'text', text: '等待普通会话并行完成' }] })))
+  await until(() => plain.every(id => bridge.threads.get(id)?.turnId))
+  await Promise.all(plain.map(threadId => rpc.call('test/finish', { threadId })))
+  await until(async () => (await allBanners()).length >= 2)
+  const bannerTags = tab => tab.evaluate(() => window.cwebTestNotifications.map(n => [n.title, n.tag]))
+  assert.deepEqual((await allBanners()).sort(), ['普通会话乙', '普通会话甲'].sort(), JSON.stringify(await Promise.all([page, otherTab].map(bannerTags))))
+  const receivingTab = (await namesOfBanners(page)).includes('普通会话甲') ? page : otherTab
+  await receivingTab.evaluate(() => window.cwebTestNotifications.find(n => n.title === '普通会话甲').dispatchEvent(new Event('click')))
+  await receivingTab.locator('.topbar').getByText('普通会话甲', { exact: true }).waitFor()
+  await rpc.call('turn/start', { threadId: plain[0], input: [{ type: 'text', text: '再跑一轮' }] })
+  await until(async () => (await allBanners()).filter(title => title === '普通会话甲').length === 2)
+  await otherTab.close()
+  const disable = await openDesktopSetting()
+  await disable.uncheck()
+  await page.getByRole('button', { name: '关闭对话框' }).click()
+  const beforeDisabled = await count(page)
+  await rpc.call('turn/start', { threadId: owner, input: [{ type: 'text', text: '验收第二个交付' }] })
+  await until(async () => (await inbox()).some(task => task.title === '验收第二个交付'))
+  await rpc.call('test/finish', { threadId: owner })
+  const secondId = (await inbox()).find(task => task.title === '验收第二个交付').id
+  await bTeam.tool(owner, 'team_report_completion', { taskId: secondId, title: '第二项已验收', summary: '已核验。' })
+  await completionCard.getByText('第二项已验收').waitFor()
+  assert.equal(await count(page), beforeDisabled)
+  await page.reload()
+  await completionCard.getByText('第二项已验收').waitFor()
+  await completionCard.getByRole('button', { name: '前往会话' }).click()
+  await page.getByRole('region', { name: '团队完工通知' }).getByText('已核验。', { exact: true }).waitFor()
+  await until(async () => Boolean((await bTeam.snapshot()).completions[1].readAt))
+  assert.equal((await aTeam.snapshot()).completions?.length || 0, 0)
 
   stage = 'new frontend on old backend has an honest discoverable entry'
   await page.route('**/api/bootstrap', async route => { const response = await route.fetch(), value = await response.json(); delete value.capabilities.teamMode; delete value.capabilities.teamPilot; await route.fulfill({ response, json: value }) })

@@ -7,7 +7,7 @@ import { newThreadNotices, threadActivity, type ThreadActivity, type ThreadNotic
 import { Presence, useExitList } from './Motion.tsx'
 import { threadReadEvent } from '../shared/navigation-order.ts'
 
-export function useThreadNotices(threads: ThreadSummary[], views: Record<string, ActivityView>, approvals: Approval[], connected: boolean, selected: string | null) {
+export function useThreadNotices(threads: ThreadSummary[], views: Record<string, ActivityView>, approvals: Approval[], connected: boolean, selected: string | null, onComplete: (notice: ThreadNotice) => void) {
   const previous = useRef<Map<string, ThreadActivity> | null>(null); const [notices, setNotices] = useState<ThreadNotice[]>([])
   const seenThreads = useRef(new Set<string>())
   useEffect(() => {
@@ -17,21 +17,27 @@ export function useThreadNotices(threads: ThreadSummary[], views: Record<string,
     const current = threadActivity(threads, liveViews, approvals)
     if (previous.current) for (const row of current.values()) if (!previous.current.has(row.id) && !seenThreads.current.has(row.id) && row.loaded) row.fresh = true
     for (const id of listed) seenThreads.current.add(id)
-    const added = newThreadNotices(previous.current || new Map(), current).filter(row => row.kind !== 'waiting' || row.id !== selected); previous.current = current
+    const added = newThreadNotices(previous.current || new Map(), current)
+      .filter(row => row.kind !== 'waiting' || row.id !== selected)
+      // Native thread timestamps are seconds. UI reports and permission dates are milliseconds.
+      .map(row => ({ ...row, updatedAt: Math.round(row.updatedAt * 1000) }))
+    previous.current = current
+    for (const notice of added) if (notice.kind === 'completed') onComplete(notice)
     setNotices(rows => {
       let next = rows.filter(row => { const state = current.get(row.id); return state && (row.kind === 'waiting' ? row.id !== selected && state.attention : state.status === 'completed' && !state.attention) }).map(row => { const state = current.get(row.id)!; return row.title === state.title && row.cwd === state.cwd ? row : { ...row, title: state.title, cwd: state.cwd } })
       for (const row of added) next = [...next.filter(value => value.id !== row.id), row]
       next = next.slice(-10)
       return next.length === rows.length && next.every((row, index) => row === rows[index]) ? rows : next
     })
-  }, [threads, views, approvals, connected, selected])
+  }, [threads, views, approvals, connected, selected, onComplete])
   function dismiss(key: string, read = false) { const row = notices.find(row => row.key === key); if (read && row?.kind === 'completed') window.dispatchEvent(new CustomEvent(threadReadEvent, { detail: row.id })); setNotices(rows => rows.filter(row => row.key !== key)) }
   return { notices, dismiss }
 }
-function NoticeCard({ notice, workspace, exiting, onJump, onDismiss }: { notice: ThreadNotice; workspace: string; exiting: boolean; onJump: (id: string) => void; onDismiss: (key: string, read?: boolean) => void }) {
+export type VisibleNotice = ThreadNotice | { kind: 'team-completion'; key: string; id: string; cwd: string; title: string; sender: string; reportId: string; workspaceId?: string }
+function NoticeCard({ notice, workspace, exiting, onJump, onDismiss }: { notice: VisibleNotice; workspace: string; exiting: boolean; onJump: (id: string, reportId?: string) => void; onDismiss: (key: string, read?: boolean) => void }) {
   const element = useRef<HTMLElement>(null); const hover = useRef(false); const dismiss = useRef(onDismiss); dismiss.current = onDismiss
   useEffect(() => {
-    if (notice.kind === 'waiting') return
+    if (notice.kind !== 'completed') return
     let remaining = 15_000; let last = Date.now()
     const timer = setInterval(() => {
       const now = Date.now(); const paused = document.hidden || hover.current || element.current?.contains(document.activeElement)
@@ -41,10 +47,10 @@ function NoticeCard({ notice, workspace, exiting, onJump, onDismiss }: { notice:
     return () => clearInterval(timer)
   }, [notice.key])
   return <article ref={element} className={`thread-notice notice-${notice.kind}`} data-exiting={exiting || undefined} aria-hidden={exiting || undefined} {...(exiting ? { inert: '' } : {})} onMouseEnter={() => { hover.current = true }} onMouseLeave={() => { hover.current = false }}>
-    <div className="thread-notice-icon">{notice.kind === 'waiting' ? <MessageCircleQuestion size={18} /> : <CheckCircle2 size={18} />}</div><div className="thread-notice-copy"><span className="thread-notice-state">{notice.kind === 'waiting' ? '需要你的回复' : '本轮处理完成'}</span><strong title={notice.title}>{notice.title}</strong><div className="thread-notice-footer"><small title={notice.cwd}>{workspace}</small><button type="button" onClick={() => { onJump(notice.id); onDismiss(notice.key) }}>前往会话<ArrowUpRight size={14} /></button></div></div><button type="button" className="icon-button thread-notice-close" aria-label={`关闭${notice.kind === 'waiting' ? '待回复' : '完成'}通知 ${notice.title}`} onClick={() => onDismiss(notice.key, true)}><X size={14} /></button>
+    <div className="thread-notice-icon">{notice.kind === 'waiting' ? <MessageCircleQuestion size={18} /> : <CheckCircle2 size={18} />}</div><div className="thread-notice-copy"><span className="thread-notice-state">{notice.kind === 'waiting' ? '需要你的回复' : notice.kind === 'team-completion' ? '团队任务已完工 · ' + notice.sender : '本轮处理完成'}</span><strong title={notice.title}>{notice.title}</strong><div className="thread-notice-footer"><small title={notice.cwd}>{workspace}</small><button type="button" onClick={() => { onJump(notice.id, notice.kind === 'team-completion' ? notice.reportId : undefined); onDismiss(notice.key) }}>前往会话<ArrowUpRight size={14} /></button></div></div><button type="button" className="icon-button thread-notice-close" aria-label={`关闭${notice.kind === 'waiting' ? '待回复' : '完成'}通知 ${notice.title}`} onClick={() => onDismiss(notice.key, true)}><X size={14} /></button>
   </article>
 }
-export function ThreadNotices({ notices, workspaces, onJump, onDismiss }: { notices: ThreadNotice[]; workspaces: WorkspaceInfo[]; onJump: (id: string) => void; onDismiss: (key: string, read?: boolean) => void }) {
+export function ThreadNotices({ notices, workspaces, onJump, onDismiss }: { notices: VisibleNotice[]; workspaces: WorkspaceInfo[]; onJump: (id: string, reportId?: string) => void; onDismiss: (key: string, read?: boolean) => void }) {
   const displayed = useExitList(notices, 'key'); const [open, setOpen] = useState(false)
   const stack = useRef<HTMLDivElement>(null); const hub = useRef<HTMLButtonElement>(null); const timer = useRef<ReturnType<typeof setTimeout>>()
   const latest = notices.at(-1)?.key || ''; const waiting = notices.some(row => row.kind === 'waiting')
